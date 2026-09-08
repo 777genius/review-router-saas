@@ -288,6 +288,7 @@ const reconcileShape = shapeOf([
   "originalMembership",
   "aclDelta",
   "receipt",
+  "currentPermit",
   "fenceHeld",
 ]);
 
@@ -326,6 +327,7 @@ export function reconcileHistorical89InPlaceOperation(input) {
     originalMembership,
     aclDelta,
     receipt,
+    currentPermit,
     fenceHeld,
   } = input;
   const reasons = [];
@@ -397,8 +399,35 @@ export function reconcileHistorical89InPlaceOperation(input) {
       reasons: Object.freeze([]),
     });
   }
+  if (outcome.status !== "uncommitted-candidate")
+    return fenced(["schema_outcome_unknown"]);
   // uncommitted-candidate: a confirmed rollback to the exact original 89.
   if (receipt !== null) return fenced(["receipt_without_committed_schema"]);
+  // Match the JSON returned by custody_current_permit and the same fields
+  // checked by the in-transaction permit assertion. Coordinates are SQL text.
+  let binding;
+  try {
+    binding = assertManagedOperationCustodyBinding(plan.binding);
+  } catch {
+    return fenced(["plan_untrusted"]);
+  }
+  const expectedPermit = {
+    ...binding,
+    kind: phase.kind,
+    admissionIdentityDigest: plan.identityDigest,
+    terminalCatalogDigest: plan.reviewedTerminalCatalogDigest,
+    epoch: String(plan.coordinates.epoch),
+    generation: String(plan.coordinates.generation),
+    nonce: plan.coordinates.nonce,
+    state: "open",
+  };
+  if (
+    keysOf(currentPermit) !== keysOf(expectedPermit) ||
+    Object.entries(expectedPermit).some(
+      ([key, value]) => currentPermit[key] !== value,
+    )
+  )
+    return fenced(["current_permit_untrusted"]);
   return Object.freeze({
     decision: "resume-same-operation",
     replay: false,
