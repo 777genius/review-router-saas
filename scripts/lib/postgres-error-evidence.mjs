@@ -927,7 +927,30 @@ function parsePrismaMigrationPostgresEnvelope(stderr) {
 const prismaGenericAbortedTransactionMessage =
   "current transaction is aborted, commands ignored until end of transaction block";
 
-function parsePrismaGenericAbortedTransactionEnvelope(stderr) {
+// This metadata is supplied by the process runner, never recovered from output.
+// Missing metadata preserves the original repository-config contract.
+function expectedPrismaConfigDisplayPath(invocation) {
+  if (invocation === undefined) return "prisma.config.ts";
+  if (
+    !invocation ||
+    typeof invocation !== "object" ||
+    Array.isArray(invocation) ||
+    Reflect.ownKeys(invocation).length !== 1 ||
+    !Object.getOwnPropertyDescriptor(invocation, "configDisplayPath")?.value ||
+    typeof invocation.configDisplayPath !== "string" ||
+    invocation.configDisplayPath.length > 4096 ||
+    !/^(?:\.\.\/)*(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:ts|mjs)$/u.test(
+      invocation.configDisplayPath,
+    )
+  )
+    return null;
+  return invocation.configDisplayPath;
+}
+
+function parsePrismaGenericAbortedTransactionEnvelope(stderr, invocation) {
+  const configDisplayPath = expectedPrismaConfigDisplayPath(invocation);
+  if (configDisplayPath === null) return null;
+  const configHeader = `Loaded Prisma config from ${configDisplayPath}.`;
   const source = String(stderr ?? "");
   if (source.length === 0 || source.length > 16_384) return null;
   let normalized = ansiNormalized(source);
@@ -938,7 +961,10 @@ function parsePrismaGenericAbortedTransactionEnvelope(stderr) {
   const lines = normalized.split("\n");
   if (
     lines.length !== 11 ||
-    lines[0] !== "Loaded Prisma config from prisma.config.ts." ||
+    lines[0] !== configHeader ||
+    // ANSI styling may wrap the header, but cannot repair a substituted path.
+    (invocation !== undefined &&
+      !source.split("\n")[0].includes(configHeader)) ||
     lines[1] !== "" ||
     lines[2] !== "Prisma schema loaded from prisma/schema.prisma." ||
     lines[3] !== `Error: ERROR: ${prismaGenericAbortedTransactionMessage}` ||
@@ -1004,7 +1030,10 @@ export function hasCanonicalPrismaGenericAbortedTransactionError(
     !/^[0-9]{6}_[a-z0-9_]{1,200}$/u.test(migrationName ?? "")
   )
     return false;
-  const envelope = parsePrismaGenericAbortedTransactionEnvelope(result.stderr);
+  const envelope = parsePrismaGenericAbortedTransactionEnvelope(
+    result.stderr,
+    result.prismaInvocation,
+  );
   return Boolean(
     envelope &&
     envelope.message === prismaGenericAbortedTransactionMessage &&

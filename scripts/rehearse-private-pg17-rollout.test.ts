@@ -1287,6 +1287,7 @@ describe("disposable dual-version rehearsal", () => {
       "000090_workflow_provisioning_attempt_authority",
       "000091_workflow_provisioning_artifact_and_inventory",
       "000096_hosted_pool_public_repository_eligibility",
+      "000098_certified_fork_effect_archive",
     ]);
     expect(exclusions).not.toContain("000067_review_live_progress");
     expect(exclusions).not.toContain(
@@ -1320,14 +1321,20 @@ describe("disposable dual-version rehearsal", () => {
         ),
       ),
     ).toBe(canonicalReleaseMigrationArtifact.preManifestIdentity);
-    expect(migrationManifestIdentity(migrationNames)).toBe(
-      canonicalReleaseMigrationArtifact.postManifestIdentity,
-    );
+    expect(
+      migrationManifestIdentity(
+        migrationNames.filter(
+          (name) => name !== "000098_certified_fork_effect_archive",
+        ),
+      ),
+    ).toBe(canonicalReleaseMigrationArtifact.postManifestIdentity);
     // Historical95 checkout retains its exact immutable identity.
     expect(
       migrationManifestIdentity(
         migrationNames.filter(
-          (name) => name !== "000096_hosted_pool_public_repository_eligibility",
+          (name) =>
+            name !== "000096_hosted_pool_public_repository_eligibility" &&
+            name !== "000098_certified_fork_effect_archive",
         ),
       ),
     ).toBe(
@@ -1346,34 +1353,45 @@ describe("disposable dual-version rehearsal", () => {
       ]),
     ).toThrow("private_pg17_rehearsal_migration_boundary_unclassified");
   });
-  it("excludes SQL96 only from the historical fixture and preserves current source bytes", () => {
-    const source = "packages/platform/db/prisma";
-    const migration = "000096_hosted_pool_public_repository_eligibility";
-    const sourceSql = join(source, "migrations", migration, "migration.sql");
-    const before = readFileSync(sourceSql);
-    const root = mkdtempSync(join(tmpdir(), "rr-pre-release96-"));
-    try {
-      const destination = materializeCanonicalPreReleasePrisma(
-        source,
-        join(root, "prisma"),
-      );
-      const historical = readdirSync(join(destination, "migrations"));
-      expect(historical).not.toContain(migration);
-      expect(migrationManifestIdentity(historical)).toBe(
-        canonicalReleaseMigrationArtifact.preManifestIdentity,
-      );
-      const current = readdirSync(join(source, "migrations"));
-      expect(current).toContain(migration);
-      expect(readFileSync(sourceSql)).toEqual(before);
-      expect([...current].sort()).toEqual(canonicalPrismaMigrationNames);
-      expect(canonicalPrismaMigrationNames).toContain(migration);
-      expect(migrationManifestIdentity(current)).toBe(
-        "sha256:5faad7059a2f57055086dd1571e87706c261a486e8952334401f1d91cc41c97b",
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+  it.each([
+    "000096_hosted_pool_public_repository_eligibility",
+    "000098_certified_fork_effect_archive",
+  ])(
+    "excludes %s only from the historical fixture and preserves current source bytes",
+    (migration) => {
+      const source = "packages/platform/db/prisma";
+      const sourceSql = join(source, "migrations", migration, "migration.sql");
+      const before = readFileSync(sourceSql);
+      const root = mkdtempSync(join(tmpdir(), "rr-pre-release96-"));
+      try {
+        const destination = materializeCanonicalPreReleasePrisma(
+          source,
+          join(root, "prisma"),
+        );
+        const historical = readdirSync(join(destination, "migrations"));
+        expect(historical).not.toContain(migration);
+        expect(migrationManifestIdentity(historical)).toBe(
+          canonicalReleaseMigrationArtifact.preManifestIdentity,
+        );
+        const current = readdirSync(join(source, "migrations"));
+        expect(current).toContain(migration);
+        expect(readFileSync(sourceSql)).toEqual(before);
+        expect([...current].sort()).toEqual(canonicalPrismaMigrationNames);
+        expect(canonicalPrismaMigrationNames).toContain(migration);
+        expect(
+          migrationManifestIdentity(
+            current.filter(
+              (name) => name !== "000098_certified_fork_effect_archive",
+            ),
+          ),
+        ).toBe(
+          "sha256:5faad7059a2f57055086dd1571e87706c261a486e8952334401f1d91cc41c97b",
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
   it("canonicalizes only the disposable PUBLIC table-read drift", () => {
     const sql = disposableTargetPublicTableAclCanonicalizationSql();
 
