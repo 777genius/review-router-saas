@@ -323,7 +323,7 @@ describeWithDatabase.sequential(
       "replays %s evidence and completes the target with a fresh critic", async (change) => {
         const fixture = requireHarness(harness);
         const sourceAction = await fixture.run(PairedActionScenario.Success);
-        expect(sourceAction).toMatchObject({
+        expect(sourceAction, actionFailureMessage(sourceAction, fixture, await investigationFailureState(fixture))).toMatchObject({
           ok: true,
           scenario: PairedActionScenario.Success,
         });
@@ -397,23 +397,90 @@ describeWithDatabase.sequential(
         }
         const open = preparedSnapshot.obligations.filter((obligation) => obligation.state === "open");
         const hitIds = new Set(hits.map((receipt) => receipt.obligationId));
-        const sourceIds = new Set(sourceSnapshot.obligations.map((obligation) => obligation.obligationId));
+        const sourceById = new Map(sourceSnapshot.obligations.map((obligation) => [obligation.obligationId, obligation]));
+        const preparedById = new Map(preparedSnapshot.obligations.map((obligation) => [obligation.obligationId, obligation]));
+        const requirements = preparedSnapshot.obligations.map((obligation) => JSON.parse(obligation.canonicalRequirement));
+        const inventories = preparedSnapshot.obligations.filter((obligation) => JSON.parse(obligation.canonicalRequirement).kind === "complete_inventory");
+        expect(inventories).toHaveLength(1);
+        const inventory = inventories[0]!;
+        // Inventory identity includes the revision and tree, even when the review
+        // unit still owns only contract.ts. It must be fresh in both scenarios.
+        expect(sourceById.has(inventory.obligationId)).toBe(false);
+        expect(JSON.parse(inventory.canonicalRequirement)).toMatchObject({
+          reviewRevisionHash: targetRevision.reviewRevisionHash,
+          treeOid: targetRevision.headTreeSha,
+        });
+        expect(inventory.state).toBe("open");
+        const contractFiles = sourceSnapshot.obligations.filter((obligation) => {
+          const requirement = JSON.parse(obligation.canonicalRequirement);
+          return requirement.kind === "complete_changed_file" && requirement.path === "src/contract.ts";
+        });
+        expect(contractFiles.length).toBeGreaterThan(0);
+        for (const source of contractFiles) {
+          expect(preparedById.get(source.obligationId)).toMatchObject({ state: "satisfied" });
+          expect(hitIds.has(source.obligationId)).toBe(true);
+        }
         for (const obligation of preparedSnapshot.obligations) {
-          expect(sourceIds.has(obligation.obligationId)).toBe(true);
-          const requirement = JSON.parse(obligation.canonicalRequirement) as { kind: string };
-          // The changed caller leaves the reviewed contract bytes intact. Search
-          // evidence covering that caller must miss; unrelated file reads must hit.
-          if (requirement.kind === "complete_changed_file") {
-            expect(obligation.state).toBe("satisfied");
-            expect(hitIds.has(obligation.obligationId)).toBe(true);
+          const source = sourceById.get(obligation.obligationId);
+          const requirement = JSON.parse(obligation.canonicalRequirement);
+          if (source) {
+            expect(obligation).toMatchObject({
+              coverageContractVersion: source.coverageContractVersion,
+              stableReviewUnitKey: source.stableReviewUnitKey,
+              kind: source.kind,
+              canonicalSubject: source.canonicalSubject,
+              canonicalRequirement: source.canonicalRequirement,
+            });
+          } else {
+            // New seeds are not replay misses of a source receipt. Check their
+            // concrete provenance instead of requiring membership in the source.
+            expect(obligation.state).toBe("open");
+            switch (requirement.kind) {
+              case "complete_inventory":
+                expect(obligation.origin).toBe("coverage_contract");
+                break;
+              case "complete_changed_file":
+                expect(obligation.origin).toBe("coverage_contract");
+                expect(requirement.path).toBe(change === "dependency" ? "src/caller-a.ts" : "src/independent.ts");
+                expect(requirement.pathHash).toBe(createHash("sha256").update(requirement.path).digest("hex"));
+                break;
+              case "complete_page_chain":
+                expect(obligation.origin).toBe("deterministic_expansion");
+                expect(requirements.some((item) => item.kind === "complete_changed_file" && item.pathHash === requirement.sourcePathHash)).toBe(true);
+                break;
+              default:
+                throw new Error(`unexpected_new_replay_obligation:${obligation.obligationId}:${obligation.canonicalRequirement}`);
+            }
           }
           if (obligation.state === "open") {
             expect(preparedSnapshot.receipts.some((receipt) => receipt.obligationId === obligation.obligationId)).toBe(false);
+          } else {
+            expect(obligation.state).toBe("satisfied");
+            expect(source).toBeDefined();
+            expect(hitIds.has(obligation.obligationId)).toBe(true);
           }
         }
+        for (const receipt of hits) {
+          expect(sourceById.has(receipt.obligationId)).toBe(true);
+          expect(preparedById.has(receipt.obligationId)).toBe(true);
+        }
         if (change === "dependency") {
-          expect(open.length).toBeGreaterThan(0);
-          expect(open.every((obligation) => JSON.parse(obligation.canonicalRequirement).kind === "complete_page_chain")).toBe(true);
+          // Select the source searches whose authenticated relation includes the
+          // edited caller. New inventory/file seeds must not mask missing misses.
+          const callerQueries = new Set(sourceSnapshot.obligations.flatMap((obligation) => {
+            const requirement = JSON.parse(obligation.canonicalRequirement);
+            return requirement.kind === "complete_relation_context" && requirement.requiredPathHashes.includes(callerHash)
+              ? [requirement.queryHash] : [];
+          }));
+          const dependentSearches = preparedSnapshot.obligations.filter((obligation) => {
+            const requirement = JSON.parse(obligation.canonicalRequirement);
+            return sourceById.has(obligation.obligationId) && requirement.kind === "complete_page_chain" && callerQueries.has(requirement.queryHash);
+          });
+          expect(dependentSearches.length).toBeGreaterThan(0);
+          for (const obligation of dependentSearches) {
+            expect(obligation.state).toBe("open");
+            expect(hitIds.has(obligation.obligationId)).toBe(false);
+          }
         }
         await expect(replaySnapshot(fixture, sourceInvestigation.investigationId)).resolves.toEqual(sourceSnapshot);
 
@@ -449,8 +516,38 @@ describeWithDatabase.sequential(
         expect(certificate.criticAttestationId).toEqual(expect.any(String));
         expect(terminal.turns.every((turn) => turn.state === "committed" && turn.acceptedAttestationId !== null)).toBe(true);
         expect(terminal.obligations.every((obligation) => obligation.state === "satisfied")).toBe(true);
+        const terminalById = new Map(terminal.obligations.map((obligation) => [obligation.obligationId, obligation]));
+        // Discovery can synthesize relation obligations from a changed-file
+        // search or a seeded page chain. Their identity includes that parent and
+        // authenticated path set, so they need not have a source-revision ID.
+        for (const obligation of terminal.obligations) {
+          if (preparedById.has(obligation.obligationId)) continue;
+          const requirement = JSON.parse(obligation.canonicalRequirement);
+          expect(obligation.origin).toBe("deterministic_expansion");
+          expect(requirement.kind).toBe("complete_relation_context");
+          const parent = terminalById.get(requirement.sourceObligationId);
+          expect(parent).toBeDefined();
+          const parentRequirement = JSON.parse(parent!.canonicalRequirement);
+          expect(["complete_changed_file", "complete_page_chain"]).toContain(parentRequirement.kind);
+          expect(requirement.sourcePathHash).toBe(parentRequirement.pathHash ?? parentRequirement.sourcePathHash);
+          if (parentRequirement.kind === "complete_page_chain") {
+            expect(requirement.queryHash).toBe(parentRequirement.queryHash);
+            expect(requirement.initialOperationInputHash).toBe(parentRequirement.initialOperationInputHash);
+          }
+          expect(requirement.requiredPathHashes.length).toBeGreaterThan(0);
+          expect(requirement.requiredPathCount).toBe(requirement.requiredPathHashes.length);
+          expect(terminal.receipts.find((receipt) => receipt.obligationId === obligation.obligationId)).toMatchObject({
+            replayProofId: null,
+            reviewRevisionHash: targetRevision.reviewRevisionHash,
+          });
+        }
         const discoveryIds = new Set(terminal.turns.filter((turn) => turn.purpose === "discovery").flatMap((turn) => turn.obligationIds as string[]));
         for (const obligation of open) expect(discoveryIds.has(obligation.obligationId)).toBe(true);
+        for (const obligation of terminal.obligations) {
+          if (!preparedById.has(obligation.obligationId)) {
+            expect(discoveryIds.has(obligation.obligationId)).toBe(true);
+          }
+        }
         for (const receipt of hits) {
           expect(discoveryIds.has(receipt.obligationId)).toBe(false);
           expect(terminal.receipts.find((item) => item.obligationId === receipt.obligationId)).toEqual(receipt);
