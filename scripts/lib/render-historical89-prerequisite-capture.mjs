@@ -23,6 +23,9 @@ const limits = Object.freeze({
   catalogBytes: 8 * 1024 * 1024,
   rows: 20_000,
   queryMs: 5_000,
+  statementMs: 4_000,
+  catalogQueryMs: 16_000,
+  catalogStatementMs: 15_000,
 });
 const identitySql = `SELECT jsonb_build_object(
   'databaseName',current_database(),'sessionUser',session_user,'currentRole',current_user,
@@ -173,9 +176,9 @@ export async function captureHistorical89Prerequisites({
   const names = ["identity", "cluster", ...Object.keys(projections)];
   for (const name of names) result.collection[name] = "not-collected";
   let stage = "begin";
-  const query = async (text) => {
+  const query = async (text, queryMs = limits.queryMs) => {
     try {
-      return await client.query({ text, query_timeout: limits.queryMs });
+      return await client.query({ text, query_timeout: queryMs });
     } catch (cause) {
       // Never propagate pg message/detail/hint/query/cause (even on ROLLBACK).
       throw error(
@@ -190,7 +193,10 @@ export async function captureHistorical89Prerequisites({
   const read = async (name, sql) => {
     stage = name;
     const byteLimit = name === "catalog" ? limits.catalogBytes : limits.bytes;
-    const response = await query(bounded(sql, byteLimit));
+    const response = await query(
+      bounded(sql, byteLimit),
+      name === "catalog" ? limits.catalogQueryMs : limits.queryMs,
+    );
     if (response.rows?.length !== 1) throw error("missing-facts");
     const row = response.rows[0];
     if (row.exceeded !== false) throw error("read-cap");
@@ -211,6 +217,8 @@ export async function captureHistorical89Prerequisites({
     await query("SET LOCAL statement_timeout = '4s'");
     await query("SET LOCAL lock_timeout = '1s'");
     await query("SET LOCAL idle_in_transaction_session_timeout = '5s'");
+    // Avoid JIT compilation spending the bounded capture budget; rollback restores it.
+    await query("SET LOCAL jit = off");
     await query("SET LOCAL search_path = pg_catalog, public");
     const identity = await read("identity", identitySql);
     record("identity", identity);
@@ -235,9 +243,16 @@ export async function captureHistorical89Prerequisites({
     result.migrationIdentities = readHistorical89PendingIdentities();
     const inventory = readRenderHistorical96CheckoutInventory();
     for (const [name, sql] of Object.entries(projections)) {
+      if (name === "catalog") {
+        stage = name;
+        // Measured production catalog roundtrip is 7.592s with JIT off.
+        // Only this inventory gets the larger fixed budget; SQL stays identical.
+        await query("SET LOCAL statement_timeout = '15s'");
+      }
       const value = await read(name, sql);
       if (!validProjection(name, value)) throw error("missing-facts");
       record(name, value);
+      if (name === "catalog") await query("SET LOCAL statement_timeout = '4s'");
       if (name === "capabilities" && !value.schemaOwnerRoleExists)
         result.unresolvedCapabilities.push("schema-owner-role-not-observed");
     }

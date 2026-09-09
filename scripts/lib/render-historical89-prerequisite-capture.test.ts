@@ -121,8 +121,8 @@ function harness(values = fixture(), failAt?: string, code = "42501") {
         text: string;
         query_timeout: number;
       }) => {
-        expect(query_timeout).toBe(5000);
         const name = text.startsWith("WITH capture") ? names[index++] : text;
+        expect(query_timeout).toBe(name === "catalog" ? 16000 : 5000);
         if (name === undefined) throw new Error("unexpected capture query");
         sequence.push(name);
         if (name === failAt)
@@ -174,10 +174,28 @@ describe("read-only historical89 prerequisite capture", () => {
         "SET LOCAL statement_timeout = '4s'",
         "SET LOCAL lock_timeout = '1s'",
         "SET LOCAL idle_in_transaction_session_timeout = '5s'",
+        "SET LOCAL jit = off",
         "SET LOCAL search_path = pg_catalog, public",
-        ...Object.keys(values),
+        ...Object.keys(values).flatMap((name) =>
+          name === "catalog"
+            ? [
+                "SET LOCAL statement_timeout = '15s'",
+                name,
+                "SET LOCAL statement_timeout = '4s'",
+              ]
+            : [name],
+        ),
         "ROLLBACK",
       ]);
+      expect(result.limits).toEqual({
+        bytes: 2_000_000,
+        catalogBytes: 8 * 1024 * 1024,
+        rows: 20_000,
+        queryMs: 5_000,
+        statementMs: 4_000,
+        catalogQueryMs: 16_000,
+        catalogStatementMs: 15_000,
+      });
       expect(result.collectionComplete).toBe(true);
       expect(result.rollbackConfirmed).toBe(true);
       expect(result.observations).toEqual(values);
@@ -217,6 +235,48 @@ describe("read-only historical89 prerequisite capture", () => {
       expect(sql).toContain("'signalBackend',pg_has_role");
       expect(sql).toContain("'definitionDigest'");
       expect(sql).toContain("'configurationDigest'");
+    },
+  );
+
+  it("rolls back a failed JIT setup before collecting any evidence", async () => {
+    const h = harness(fixture(), "SET LOCAL jit = off");
+    const result = await h.run();
+    expect(result.collection.timeouts).toBe("permission-denied");
+    expect(result.observations).toEqual({});
+    expect(result.collectionComplete).toBe(false);
+    expect(result.rollbackConfirmed).toBe(true);
+    expect(h.sequence.slice(-2)).toEqual(["SET LOCAL jit = off", "ROLLBACK"]);
+    expect(h.client.end).not.toHaveBeenCalled();
+  });
+
+  it.each(["setup", "restore"])(
+    "fails closed on catalog budget %s failure",
+    async (phase) => {
+      const h = harness();
+      const original = h.client.query.getMockImplementation()!;
+      let defaults = 0;
+      h.client.query.mockImplementation(async (config) => {
+        if (config.text === "SET LOCAL statement_timeout = '4s'") defaults++;
+        if (
+          (phase === "setup" &&
+            config.text === "SET LOCAL statement_timeout = '15s'") ||
+          (phase === "restore" &&
+            defaults === 2 &&
+            config.text === "SET LOCAL statement_timeout = '4s'")
+        )
+          throw Object.assign(new Error("secret"), { code: "22023" });
+        return original(config);
+      });
+      const result = await h.run();
+      expect(result.collection.catalog).toBe("query-failed");
+      expect(result.digests.ledger).toBe(
+        renderManagedEvidenceDigest(fixture().ledger),
+      );
+      expect(Boolean(result.digests.catalog)).toBe(phase === "restore");
+      expect(result.collection.memberships).toBe("not-collected");
+      expect(result.collectionComplete).toBe(false);
+      expect(result.rollbackConfirmed).toBe(true);
+      expect(h.sequence.at(-1)).toBe("ROLLBACK");
     },
   );
 
@@ -304,10 +364,41 @@ describe("read-only historical89 prerequisite capture", () => {
       expect(result.collection.catalog).toBe(
         code === "57014" ? "query-timeout" : "query-failed",
       );
+      expect(result.rollbackConfirmed).toBe(true);
+      expect(result.collectionComplete).toBe(false);
       expect(result.digests.ledger).toBeTruthy();
       expect(result.collection.memberships).toBe("not-collected");
     },
   );
+
+  it("retains pre-catalog evidence and requires discard when timeout cleanup fails", async () => {
+    const h = harness(fixture(), "catalog", "57014");
+    const original = h.client.query.getMockImplementation()!;
+    h.client.query.mockImplementation(async (config) => {
+      if (config.text === "ROLLBACK") {
+        expect(config.query_timeout).toBe(5_000);
+        throw new Error("secret-cleanup-failure");
+      }
+      return original(config);
+    });
+    const result = await h.run();
+    expect(result.collection.catalog).toBe("query-timeout");
+    expect(result.digests.ledger).toBe(
+      renderManagedEvidenceDigest(fixture().ledger),
+    );
+    expect(result.observations.catalog).toBeUndefined();
+    expect(result.collection.memberships).toBe("not-collected");
+    expect(result.rollbackConfirmed).toBe(false);
+    expect(result.collectionComplete).toBe(false);
+    expect(result.authorizesProductionMutation).toBe(false);
+    expect(result.unresolvedCapabilities).toContain(
+      "rollback-unconfirmed-discard-client",
+    );
+    expect(h.client.query.mock.calls.at(-1)?.[0].text).toBe("ROLLBACK");
+    expect(JSON.stringify(result)).not.toMatch(
+      /secret-cleanup-failure|secret-provider-body|secret-detail|secret-hint/u,
+    );
+  });
 
   it.each([null, { version: 1, facts: [] }])(
     "does not call missing catalog facts complete",
@@ -364,17 +455,14 @@ describe("read-only historical89 prerequisite capture", () => {
         values.objectAcl.rows = [{ identity: "x".repeat(2_000_001) }];
       if (kind === "rows") values.objectAcl.rows = Array(20_001).fill({});
       const h = harness(values);
-      if (kind === "server")
-        h.client.query
-          .mockImplementationOnce(async () => ({ command: "BEGIN", rows: [] }))
-          .mockImplementationOnce(async () => ({ command: "SET", rows: [] }))
-          .mockImplementationOnce(async () => ({ command: "SET", rows: [] }))
-          .mockImplementationOnce(async () => ({ command: "SET", rows: [] }))
-          .mockImplementationOnce(async () => ({ command: "SET", rows: [] }))
-          .mockImplementationOnce(async () => ({
-            command: "SELECT",
-            rows: [{ value: null, exceeded: true }],
-          }));
+      if (kind === "server") {
+        const original = h.client.query.getMockImplementation()!;
+        h.client.query.mockImplementation(async (query) =>
+          query.text.startsWith("WITH capture")
+            ? { command: "SELECT", rows: [{ value: null, exceeded: true }] }
+            : original(query),
+        );
+      }
       const result = await h.run();
       expect(result.collectionComplete).toBe(false);
       expect(result.digests.objectAcl).toBeUndefined();
