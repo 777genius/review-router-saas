@@ -530,7 +530,13 @@ describe("review configuration", () => {
       providers: ProviderRow[];
     };
     type PrismaStub = {
-      $transaction<T>(callback: (tx: PrismaStub) => Promise<T>): Promise<T>;
+      $transaction<T>(
+        callback: (
+          tx: Omit<PrismaStub, "$transaction"> & {
+            $queryRaw(): Promise<unknown[]>;
+          },
+        ) => Promise<T>,
+      ): Promise<T>;
       reviewConfiguration: {
         upsert(): Promise<{ id: string }>;
         findUnique(): Promise<{ versions: VersionRow[] }>;
@@ -548,12 +554,22 @@ describe("review configuration", () => {
     const versions: VersionRow[] = [];
     let transactionAttempts = 0;
     const prisma: PrismaStub = {
-      $transaction: async <T>(callback: (tx: PrismaStub) => Promise<T>) => {
+      $transaction: async <T>(
+        callback: (
+          tx: Omit<PrismaStub, "$transaction"> & {
+            $queryRaw(): Promise<unknown[]>;
+          },
+        ) => Promise<T>,
+      ) => {
         transactionAttempts += 1;
         if (transactionAttempts === 1) {
           throw { code: "P2034" };
         }
-        return callback(prisma);
+        return callback({
+          $queryRaw: async () => [],
+          reviewConfiguration: prisma.reviewConfiguration,
+          reviewConfigurationVersion: prisma.reviewConfigurationVersion,
+        });
       },
       reviewConfiguration: {
         upsert: async () => ({ id: "review_config_1" }),
