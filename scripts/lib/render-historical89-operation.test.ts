@@ -557,7 +557,7 @@ describe("operation observation bindings", () => {
     );
     return [
       ...sql.matchAll(
-        /CREATE FUNCTION (\S+)\(([^\n]*)\) RETURNS jsonb\n  LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public\n  AS \$(\w+)\$([\s\S]*?)\$\3\$;/gu,
+        /CREATE FUNCTION (\S+)\(([^\n]*)\) RETURNS jsonb\n {2}LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public\n {2}AS \$(\w+)\$([\s\S]*?)\$\3\$;/gu,
       ),
     ].map(([, routine, args, , body]) => ({
       family: "routine",
