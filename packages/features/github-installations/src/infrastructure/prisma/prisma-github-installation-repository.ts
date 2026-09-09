@@ -1,3 +1,4 @@
+import { acquireCurrentScopeGuards } from "@reviewrouter/platform-db";
 import type { PrismaClient } from "@prisma/client";
 import type { GitHubInstallationRepositoryPort } from "../../application/ports/github-installation-repository-port";
 import type { GitHubInstallationSnapshot } from "../../domain/github-installation";
@@ -15,6 +16,12 @@ export class PrismaGitHubInstallationRepository implements GitHubInstallationRep
     snapshot: GitHubInstallationSnapshot,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
+      // Installation IDs have no current-scope key. Repository membership can
+      // span workspaces and change during inventory transfers; an unprotected
+      // fanout query cannot predeclare the union. Fence globally before reads.
+      await acquireCurrentScopeGuards(tx, [
+        { scope: "global", mode: "exclusive" },
+      ]);
       const existingInstallation = await tx.gitHubInstallation.findUnique({
         where: { githubInstallationId: BigInt(snapshot.githubInstallationId) },
         select: { workspaceId: true },
@@ -70,6 +77,12 @@ export class PrismaGitHubInstallationRepository implements GitHubInstallationRep
 
   async markInstallationRemoved(githubInstallationId: string): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
+      // Installation IDs have no current-scope key. Repository membership can
+      // span workspaces and change during inventory transfers; an unprotected
+      // fanout query cannot predeclare the union. Fence globally before reads.
+      await acquireCurrentScopeGuards(tx, [
+        { scope: "global", mode: "exclusive" },
+      ]);
       const installation = await tx.gitHubInstallation.findUnique({
         where: { githubInstallationId: BigInt(githubInstallationId) },
         select: { id: true },

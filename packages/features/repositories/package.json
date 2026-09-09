@@ -20,6 +20,7 @@
     "@prisma/client": "^7.8.0",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-workflow-provisioning": "workspace:*",
+    "@reviewrouter/platform-db": "workspace:*",
     "@reviewrouter/shared": "workspace:*",
     "zod": "^4.4.2"
   },

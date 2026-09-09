@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { workflowProvisioningTransaction } from "@reviewrouter/features-workflow-provisioning";
-import type { PrismaClient } from "@prisma/client";
+import { acquireCurrentScopeGuards } from "@reviewrouter/platform-db";
+import type { PrismaClient, Prisma } from "@prisma/client";
 import type {
   GitHubRepositorySnapshot,
   RepositoryConnectionSummary,
@@ -31,22 +32,16 @@ export class PrismaRepositoryConnectionRepository implements RepositoryConnectio
   }): Promise<RepositorySyncResult> {
     if (input.inventoryGeneration <= 0n)
       throw new Error("repository_inventory_generation_invalid");
-    const installation = await this.prisma.gitHubInstallation.findUnique({
-      where: { githubInstallationId: BigInt(input.githubInstallationId) },
-      select: { id: true, workspaceId: true },
-    });
-
-    if (!installation) {
-      throw new Error(
-        `GitHub installation not found: ${input.githubInstallationId}`,
-      );
-    }
 
     let upserted = 0;
     for (const repository of input.repositories) {
       const applied = await workflowProvisioningTransaction(
         this.prisma,
         async (tx) => {
+          const installation = await lockInstallationInventory(
+            tx,
+            input.githubInstallationId,
+          );
           const previous = await tx.repositoryConnection.findUnique({
             where: {
               githubRepositoryId: BigInt(repository.githubRepositoryId),
@@ -160,19 +155,25 @@ export class PrismaRepositoryConnectionRepository implements RepositoryConnectio
     const seenRepositoryIds = input.repositories.map((repository) =>
       BigInt(repository.githubRepositoryId),
     );
-    const unselected = await this.prisma.repositoryConnection.updateMany({
-      where: {
-        installationId: installation.id,
-        inventoryGeneration: { lt: input.inventoryGeneration },
-        ...(seenRepositoryIds.length > 0
-          ? { githubRepositoryId: { notIn: seenRepositoryIds } }
-          : {}),
-      },
-      data: {
-        selected: false,
-        lastSyncedAt: input.syncedAt,
-        inventoryGeneration: input.inventoryGeneration,
-      },
+    const unselected = await this.prisma.$transaction(async (tx) => {
+      const installation = await lockInstallationInventory(
+        tx,
+        input.githubInstallationId,
+      );
+      return tx.repositoryConnection.updateMany({
+        where: {
+          installationId: installation.id,
+          inventoryGeneration: { lt: input.inventoryGeneration },
+          ...(seenRepositoryIds.length > 0
+            ? { githubRepositoryId: { notIn: seenRepositoryIds } }
+            : {}),
+        },
+        data: {
+          selected: false,
+          lastSyncedAt: input.syncedAt,
+          inventoryGeneration: input.inventoryGeneration,
+        },
+      });
     });
 
     return {
@@ -213,4 +214,26 @@ export class PrismaRepositoryConnectionRepository implements RepositoryConnectio
       lastSyncedAt: repository.lastSyncedAt,
     }));
   }
+}
+
+/**
+ * No stable installation-wide fanout lock exists: inserts have no repository ID
+ * yet, transfers can change both workspaces, and trailing unselection targets a
+ * predicate. A short global exclusive guard covers that entire old/new union.
+ * Acquire at each existing transaction boundary, before provisioning reads/locks;
+ * retain per-repository Serializable retries and the separate trailing update.
+ * No network work runs here. This is serialization, not installation admission.
+ */
+async function lockInstallationInventory(
+  tx: Prisma.TransactionClient,
+  githubInstallationId: string,
+) {
+  await acquireCurrentScopeGuards(tx, [{ scope: "global", mode: "exclusive" }]);
+  const installation = await tx.gitHubInstallation.findUnique({
+    where: { githubInstallationId: BigInt(githubInstallationId) },
+    select: { id: true, workspaceId: true },
+  });
+  if (!installation)
+    throw new Error(`GitHub installation not found: ${githubInstallationId}`);
+  return installation;
 }

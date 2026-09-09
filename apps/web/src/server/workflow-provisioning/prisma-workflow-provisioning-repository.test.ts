@@ -147,10 +147,12 @@ describe("provisioning attempt writers", () => {
         updateMany: vi.fn(async () => ({ count: 0 })),
       };
       const tx = {
+        $queryRaw: vi.fn(async () => [{ locked: 1 }]),
+        gitHubInstallation: { findUnique: vi.fn(async () => destination) },
         repositoryConnection,
         workflowProvisioning: f.workflowProvisioning,
       };
-      f.prisma.$transaction.mockImplementation(async (work) => work(tx));
+      f.prisma.$transaction.mockImplementation(async (work) => work({ ...tx }));
       const prisma = {
         ...f.prisma,
         repositoryConnection,
