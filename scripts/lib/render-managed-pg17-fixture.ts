@@ -695,6 +695,37 @@ export function managedPg17Fixture() {
   return {
     start,
     cleanup,
+    // Offline diagnostic only: render an already captured fixture archive as
+    // SQL, without connecting to or creating a database.
+    recoveryArchiveSql(path: string, createDatabase: boolean) {
+      const owned = checked([
+        "inspect",
+        "--format",
+        '{{ index .Config.Labels "reviewrouter.retained.proof" }}|{{.HostConfig.NetworkMode}}',
+        name,
+      ]);
+      if (owned !== `${token}|none`)
+        throw new Error("fixture_recovery_identity");
+      const archive = readFileSync(path);
+      if (
+        archive.length > 64 * 1024 * 1024 ||
+        archive.subarray(0, 5).toString() !== "PGDMP"
+      )
+        throw new Error("fixture_recovery_bound");
+      return checked(
+        [
+          "exec",
+          "-i",
+          name,
+          "pg_restore",
+          "--schema-only",
+          "--file=-",
+          ...(createDatabase ? ["--create"] : []),
+        ],
+        archive,
+        120_000,
+      );
+    },
     query,
     session,
     apply,
