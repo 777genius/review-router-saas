@@ -1,4 +1,5 @@
 import {
+  acquireReviewConfigurationWriteScope,
   findReviewConfiguration,
   PrismaReviewConfigurationTransactionRepository,
   safeDefaultReviewConfiguration,
@@ -23,6 +24,10 @@ export async function switchRepositoryConfigurationAuthMode(input: {
     workspaceId: input.workspaceId,
     repositoryId: input.repositoryId,
   };
+  await acquireReviewConfigurationWriteScope(
+    input.transaction,
+    repositoryTarget,
+  );
   // Keep interactive-transaction queries sequential. Prisma does not execute
   // them concurrently on one transaction connection, while Promise.all hides
   // ordering and violates the project's transaction architecture invariant.
