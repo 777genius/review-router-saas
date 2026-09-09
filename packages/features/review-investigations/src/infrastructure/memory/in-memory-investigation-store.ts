@@ -278,10 +278,52 @@ export class InMemoryInvestigationStore
     });
   }
 
+  async adopt(
+    input: Parameters<InvestigationStorePort["adopt"]>[0],
+  ): Promise<InvestigationStoreCommitResult> {
+    return this.atomic(async () => {
+      const previous = this.commands.get(input.commandId);
+      if (previous) {
+        return {
+          status:
+            previous.commandHash === input.commandHash
+              ? InvestigationStoreCommitStatus.Restored
+              : InvestigationStoreCommitStatus.IdempotencyConflict,
+          investigation:
+            previous.commandHash === input.commandHash
+              ? clone(this.investigations.get(previous.investigationId) ?? null)
+              : null,
+        };
+      }
+      const current = this.investigations.get(
+        input.investigation.investigationId,
+      );
+      if (
+        !current ||
+        current.version !== input.expectedVersion ||
+        current.naturalIdentityHash !== input.investigation.naturalIdentityHash
+      ) {
+        return {
+          status: InvestigationStoreCommitStatus.ConcurrencyConflict,
+          investigation: clone(current ?? null),
+        };
+      }
+      await input.requireCurrentExecution();
+      this.commands.set(input.commandId, {
+        commandHash: input.commandHash,
+        investigationId: current.investigationId,
+      });
+      return {
+        status: InvestigationStoreCommitStatus.Committed,
+        investigation: clone(current),
+      };
+    });
+  }
+
   async commit(
     input: Parameters<InvestigationStorePort["commit"]>[0],
   ): Promise<InvestigationStoreCommitResult> {
-    return this.atomic(() => {
+    return this.atomic(async () => {
       const previousCommand = this.commands.get(input.commandId);
       if (previousCommand) {
         if (previousCommand.commandHash !== input.commandHash) {
@@ -320,6 +362,12 @@ export class InMemoryInvestigationStore
         transition: input.transition,
         privateMaterials: input.privateMaterials ?? [],
       });
+      if (
+        input.guard?.kind ===
+        InvestigationStoreCommitGuardKind.ExecutionAuthority
+      ) {
+        await input.guard.requireCurrentExecution?.();
+      }
       if (!this.commitGuardIsCurrent(input, existing ?? input.investigation)) {
         return {
           status: InvestigationStoreCommitStatus.LeaseFenceConflict,
@@ -588,7 +636,7 @@ export class InMemoryInvestigationStore
     return store;
   }
 
-  private async atomic<T>(operation: () => T): Promise<T> {
+  private async atomic<T>(operation: () => T | Promise<T>): Promise<T> {
     const previous = this.transactionTail;
     let release!: () => void;
     this.transactionTail = new Promise<void>((resolve) => {
@@ -596,7 +644,7 @@ export class InMemoryInvestigationStore
     });
     await previous;
     try {
-      return operation();
+      return await operation();
     } finally {
       release();
     }
