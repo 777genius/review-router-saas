@@ -1,3 +1,4 @@
+import { renderHistorical89PreparationCatalogGuard } from "./render-historical89-preparation-custody.mjs";
 import { createHash } from "node:crypto";
 import {
   renderManagedCanonicalLockPredicate,
@@ -481,7 +482,9 @@ const schemaSql =
 SET LOCAL ROLE ${custodyOwner};
 REVOKE ALL ON SCHEMA ${custodySchema} FROM PUBLIC;
 GRANT USAGE ON SCHEMA ${custodySchema} TO ${coordinator}, ${custodyReader};
-CREATE TABLE ${custodySchema}.operation_permit (
+${finalTablesSql()}`;
+
+const finalTablesSql = () => `CREATE TABLE ${custodySchema}.operation_permit (
   operation_id uuid PRIMARY KEY,
   kind text NOT NULL CHECK (kind=${literal(contractKind)}),
   admission_identity_digest text NOT NULL CHECK (admission_identity_digest ~ '^sha256:[a-f0-9]{64}$'),
@@ -535,6 +538,13 @@ GRANT EXECUTE ON FUNCTION ${custodySchema}.${routine}(${signature.identity}) TO 
     })
     .join("\n");
 
+/** Install the accepted final objects inside an already authenticated staged
+ * transaction. The caller must hold the preparation lock and custody role. */
+export function renderManagedOperationCustodyFinalObjectsSql(binding) {
+  return `${finalTablesSql()}
+${routineSql(routineBodies(assertManagedOperationCustodyBinding(binding)))}`;
+}
+
 /**
  * Exact catalog attestation of this operation's custody.
  *
@@ -567,7 +577,11 @@ export function renderManagedOperationCustodyVerifySql(binding) {
              OR a.grantor<>${roleOid(custodyOwner)}))`;
     })
     .join("\n");
+  const staged = `(EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='${custodySchema}' AND c.relname='historical89_preparation'))`;
   return `DO $custody_attestation$ BEGIN
+  IF ${staged} THEN
+    ${renderHistorical89PreparationCatalogGuard(bound, true)}
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n
        JOIN pg_catalog.pg_roles owner ON owner.oid=n.nspowner
        WHERE n.nspname='${custodySchema}' AND owner.rolname='${custodyOwner}'
@@ -579,10 +593,10 @@ export function renderManagedOperationCustodyVerifySql(binding) {
                  WHERE rolname IN ('${coordinator}','${custodyReader}'))))))
      OR (SELECT count(*) FROM pg_catalog.pg_proc p
          JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-         WHERE n.nspname='${custodySchema}') <> ${Object.keys(bodies).length + 1}
+         WHERE n.nspname='${custodySchema}') <> ${Object.keys(bodies).length + 1} + (CASE WHEN ${staged} THEN 1 ELSE 0 END)
      OR (SELECT count(*) FROM pg_catalog.pg_class c
          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
-         WHERE n.nspname='${custodySchema}' AND c.relkind='r') <> 2
+         WHERE n.nspname='${custodySchema}' AND c.relkind='r') <> 2 + (CASE WHEN ${staged} THEN 1 ELSE 0 END)
 ${routineChecks}
      OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p
        JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
@@ -600,7 +614,7 @@ ${routineChecks}
      OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c
        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
        CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(c.relacl,pg_catalog.acldefault('r',c.relowner))) a
-       WHERE n.nspname='${custodySchema}' AND c.relkind='r'
+       WHERE n.nspname='${custodySchema}' AND c.relkind='r' AND c.relname<>'historical89_preparation'
          AND (a.grantee<>c.relowner OR a.grantor<>c.relowner OR a.is_grantable))
      -- The custody owner cannot log in and the coordinator cannot become it.
      OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles

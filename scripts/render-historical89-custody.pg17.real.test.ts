@@ -1,3 +1,10 @@
+import {
+  renderHistorical89PreparationPrepare,
+  renderHistorical89PreparationReadSql,
+  renderHistorical89PreparationService,
+  renderHistorical89PreparationObserve,
+  renderHistorical89PreparationFinalize,
+} from "./lib/render-historical89-preparation-custody.mjs";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -946,4 +953,584 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
       );
     }
   }, 60_000);
+
+  // Staged preparation deliberately uses no fabricated future fence/recovery.
+  // Every query below uses a fresh fixture connection; effects are disposable.
+  const stagedIdentity = (db: string) => ({
+    operationId: randomUUID(),
+    systemIdentifier: pg.query(
+      db,
+      "SELECT system_identifier::text FROM pg_control_system()",
+    ),
+    databaseOid: pg.query(
+      db,
+      "SELECT oid::text FROM pg_database WHERE datname=current_database()",
+    ),
+    databaseName: db,
+    sourceCommit: "fc6366bbc09fe03fa71b0e22744e33d6004ba9ef",
+    artifactReference: renderManagedEvidenceDigest({ disposableArtifact: db }),
+    approvalReference: renderManagedEvidenceDigest({ unapprovedReference: db }),
+    baselineReference: renderManagedEvidenceDigest({ ledger: ledger(db) }),
+    fleetReference: renderManagedEvidenceDigest({
+      serviceIds: ["srv-disposable"],
+    }),
+    serviceIds: ["srv-disposable"],
+  });
+  type StagedIdentity = ReturnType<typeof stagedIdentity>;
+  const stageService = (
+    b: StagedIdentity,
+    expectedRevision: number,
+    phase: string,
+    digest: string,
+  ) =>
+    read(
+      b.databaseName,
+      renderHistorical89PreparationService(b, {
+        expectedRevision,
+        serviceId: "srv-disposable",
+        phase,
+        digest,
+      }).sql,
+    );
+  const stageObservation = (
+    b: StagedIdentity,
+    expectedRevision: number,
+    kind: string,
+    digest: string,
+  ) =>
+    read(
+      b.databaseName,
+      renderHistorical89PreparationObserve(b, {
+        expectedRevision,
+        kind,
+        digest,
+      }).sql,
+    );
+  const observedStaging = () => {
+    const b = stagedIdentity(clone());
+    read(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+    stageService(
+      b,
+      1,
+      "intent",
+      renderManagedEvidenceDigest({ intent: "disposable-stop" }),
+    );
+    stageService(
+      b,
+      2,
+      "result",
+      renderManagedEvidenceDigest({ observed: "disposable-stopped" }),
+    );
+    const binding = {
+      operationId: b.operationId,
+      systemIdentifier: b.systemIdentifier,
+      databaseOid: b.databaseOid,
+      databaseName: b.databaseName,
+      recoveryIdentitySha256: renderManagedEvidenceDigest({
+        observedRecovery: "disposable",
+      }),
+      externalFenceSha256: renderManagedEvidenceDigest({
+        observedFence: "disposable",
+      }),
+    };
+    stageObservation(
+      b,
+      3,
+      "recoveryIdentitySha256",
+      binding.recoveryIdentitySha256,
+    );
+    stageObservation(b, 4, "externalFenceSha256", binding.externalFenceSha256);
+    return { b, binding };
+  };
+
+  it("stages and reads across connections before CONNECT withdrawal, preserving original grantors", () => {
+    const db = clone();
+    const original = connectAclOf(db);
+    const b = stagedIdentity(db);
+    const prepared = read(db, renderHistorical89PreparationPrepare(b).sql);
+    expect(prepared.revision).toBe("1");
+    expect(prepared.evidence).toEqual({});
+    expect(prepared.independentlyApproved).toBe(false);
+    expect(prepared.originalConnect.entries).toEqual(
+      expect.arrayContaining(
+        original.entries.filter(
+          (entry: { privilege: string }) => entry.privilege === "CONNECT",
+        ),
+      ),
+    );
+    pg.query(db, renderHistorical89AdmissionRestrictionSql(connectAclOf(db)));
+    const restoredRead = read(
+      db,
+      renderHistorical89PreparationReadSql(b),
+      "reviewrouter_operation_custody_reader",
+    );
+    expect(restoredRead).toEqual(prepared);
+    expect(() =>
+      pg.query(
+        db,
+        renderHistorical89PreparationReadSql({ ...b, databaseOid: "99999999" }),
+        "reviewrouter_operation_custody_reader",
+      ),
+    ).toThrow("preparation_database_identity");
+    expect(read(db, renderHistorical89PreparationPrepare(b).sql)).toEqual(
+      prepared,
+    );
+    expect(() =>
+      pg.query(
+        db,
+        renderHistorical89PreparationPrepare({
+          ...b,
+          operationId: randomUUID(),
+        }).sql,
+      ),
+    ).toThrow("preparation_identity_conflict");
+    expect(() =>
+      pg.query(
+        db,
+        renderHistorical89PreparationPrepare({
+          ...b,
+          approvalReference: renderManagedEvidenceDigest({ changed: true }),
+        }).sql,
+      ),
+    ).toThrow("preparation_identity_conflict");
+  });
+
+  it("requires committed service intent, enforces stale CAS, and refuses contradictory observations", () => {
+    const b = stagedIdentity(clone());
+    read(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+    const d = renderManagedEvidenceDigest({ disposable: "intent" });
+    const other = renderManagedEvidenceDigest({ disposable: "other" });
+    expect(() => stageService(b, 1, "result", d)).toThrow(
+      "preparation_intent_before_result",
+    );
+    expect(stageService(b, 1, "intent", d).revision).toBe("2");
+    // Exact last-request retry after a lost commit ACK does not advance again.
+    expect(stageService(b, 1, "intent", d).revision).toBe("2");
+    expect(() => stageService(b, 1, "result", d)).toThrow(
+      "preparation_stale_revision",
+    );
+    expect(stageService(b, 2, "intent", d).revision).toBe("2");
+    expect(() => stageService(b, 2, "intent", other)).toThrow(
+      "preparation_service_conflict",
+    );
+    expect(stageService(b, 2, "result", d).revision).toBe("3");
+    expect(() => stageService(b, 3, "result", other)).toThrow(
+      "preparation_service_conflict",
+    );
+    expect(stageObservation(b, 3, "recoveryIdentitySha256", d).revision).toBe(
+      "4",
+    );
+    expect(() =>
+      stageObservation(b, 4, "recoveryIdentitySha256", other),
+    ).toThrow("preparation_evidence_conflict");
+    expect(stageObservation(b, 4, "recoveryIdentitySha256", d).revision).toBe(
+      "4",
+    );
+  });
+
+  it("finalizes only actual recorded bindings, installs accepted routines once, and preserves restore entries", () => {
+    const { b, binding } = observedStaging();
+    const before = read(
+      b.databaseName,
+      renderHistorical89PreparationReadSql(b),
+    );
+    const wrong = {
+      ...binding,
+      externalFenceSha256: renderManagedEvidenceDigest({ wrong: true }),
+    };
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationFinalize(b, wrong, 5).sql,
+      ),
+    ).toThrow("preparation_finalization_binding");
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationFinalize(b, binding, 4).sql,
+      ),
+    ).toThrow("preparation_stale_revision");
+    const sql = renderHistorical89PreparationFinalize(b, binding, 5).sql;
+    const finalized = read(b.databaseName, sql);
+    expect(finalized.revision).toBe("6");
+    expect(finalized.originalConnect).toEqual(before.originalConnect);
+    expect(read(b.databaseName, sql)).toEqual(finalized);
+    expect(
+      read(
+        b.databaseName,
+        renderHistorical89PreparationReadSql(b, binding),
+        "reviewrouter_operation_custody_reader",
+      ),
+    ).toEqual(finalized);
+    // The accepted attestation is also used by the existing final operation API.
+    pg.query(
+      b.databaseName,
+      renderManagedOperationCustodyBootstrap(binding).verifySql,
+    );
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationFinalize(b, wrong, 5).sql,
+      ),
+    ).toThrow("preparation_finalization_conflict");
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationFinalize(b, binding, 6).sql,
+      ),
+    ).toThrow("preparation_finalization_conflict");
+    expect(() =>
+      stageObservation(
+        b,
+        6,
+        "externalFenceSha256",
+        binding.externalFenceSha256,
+      ),
+    ).toThrow("preparation_use_final_binding");
+    expect(
+      pg.query(
+        b.databaseName,
+        "SELECT count(*) FROM release_operation_custody.operation_permit",
+        "postgres",
+      ),
+    ).toBe("0");
+  });
+
+  it("refuses finalization before required service results and observations exist", () => {
+    const b = stagedIdentity(clone());
+    read(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+    const d = renderManagedEvidenceDigest({ disposable: true });
+    const binding = {
+      operationId: b.operationId,
+      systemIdentifier: b.systemIdentifier,
+      databaseOid: b.databaseOid,
+      databaseName: b.databaseName,
+      recoveryIdentitySha256: d,
+      externalFenceSha256: d,
+    };
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationFinalize(b, binding, 1).sql,
+      ),
+    ).toThrow("preparation_finalization_binding");
+    stageObservation(b, 1, "recoveryIdentitySha256", d);
+    stageObservation(b, 2, "externalFenceSha256", d);
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationFinalize(b, binding, 3).sql,
+      ),
+    ).toThrow("preparation_finalization_binding");
+  });
+
+  it("does not adopt an impostor schema or existing role", () => {
+    let db = clone();
+    let b = stagedIdentity(db);
+    pg.query(db, "CREATE SCHEMA release_operation_custody");
+    expect(() =>
+      pg.query(db, renderHistorical89PreparationPrepare(b).sql),
+    ).toThrow("preparation_catalog_attestation");
+    db = clone();
+    b = stagedIdentity(db);
+    pg.query(db, "CREATE ROLE reviewrouter_operation_custody_reader LOGIN");
+    expect(() =>
+      pg.query(db, renderHistorical89PreparationPrepare(b).sql),
+    ).toThrow("preparation_roles_present");
+  });
+
+  it.each([
+    "ALTER TABLE release_operation_custody.historical89_preparation ADD COLUMN impostor text",
+    "ALTER TABLE release_operation_custody.historical89_preparation ALTER COLUMN services SET DEFAULT '{}'::jsonb",
+    "ALTER TABLE release_operation_custody.historical89_preparation DISABLE TRIGGER historical89_preparation_immutable",
+    "DROP TRIGGER historical89_preparation_immutable ON release_operation_custody.historical89_preparation; CREATE TRIGGER historical89_preparation_immutable BEFORE INSERT OR UPDATE OF identity OR DELETE ON release_operation_custody.historical89_preparation FOR EACH ROW EXECUTE FUNCTION release_operation_custody.historical89_preparation_immutable(); ALTER TABLE release_operation_custody.historical89_preparation ENABLE ALWAYS TRIGGER historical89_preparation_immutable",
+    "CREATE OR REPLACE FUNCTION release_operation_custody.historical89_preparation_immutable() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'",
+    "GRANT UPDATE ON release_operation_custody.historical89_preparation TO reviewrouter_operation_custody_reader",
+    "GRANT EXECUTE ON FUNCTION release_operation_custody.historical89_preparation_immutable() TO PUBLIC",
+    "GRANT reviewrouter_operation_custody_owner TO reviewrouter_operation_custody_reader WITH SET TRUE",
+    "CREATE FUNCTION release_operation_custody.impostor() RETURNS integer LANGUAGE sql AS 'SELECT 1'",
+  ])("rejects staged routine/catalog/ACL drift: %s", (tamper) => {
+    const b = stagedIdentity(clone());
+    pg.query(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+    pg.query(b.databaseName, tamper, "postgres");
+    expect(() =>
+      pg.query(b.databaseName, renderHistorical89PreparationPrepare(b).sql),
+    ).toThrow("preparation_catalog_attestation");
+  });
+
+  it.each([
+    ["TABLE preparation_public_probe", "INSERT"],
+    ["TABLE preparation_public_probe", "UPDATE (value)"],
+    ["TABLE preparation_public_probe", "INSERT (value)"],
+    ["TABLE preparation_public_probe", "REFERENCES (value)"],
+    ["TABLE preparation_public_probe", "MAINTAIN"],
+    ["SCHEMA public", "CREATE"],
+    ["SCHEMA preparation_no_usage", "CREATE"],
+    [`DATABASE ${target}`, "CREATE"],
+    ["SEQUENCE preparation_public_sequence", "USAGE"],
+    ["SEQUENCE preparation_no_usage.private_sequence", "USAGE"],
+    ["FUNCTION public.preparation_public_definer()", "EXECUTE"],
+    ["FUNCTION public.preparation_public_trigger()", "EXECUTE"],
+    ["FUNCTION preparation_no_usage.private_definer()", "EXECUTE"],
+    ["PROCEDURE public.preparation_public_procedure()", "EXECUTE"],
+  ])(
+    "rejects effective PUBLIC %s %s without revoking it",
+    (object, privilege) => {
+      const db = clone();
+      const b = stagedIdentity(db);
+      pg.query(
+        db,
+        `
+      CREATE TABLE public.preparation_public_probe (value integer);
+      CREATE SCHEMA preparation_no_usage;
+      CREATE SEQUENCE preparation_no_usage.private_sequence;
+      CREATE FUNCTION preparation_no_usage.private_definer() RETURNS integer
+        LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN INSERT INTO public.preparation_public_probe VALUES (1); RETURN 1; END';
+      REVOKE EXECUTE ON FUNCTION preparation_no_usage.private_definer() FROM PUBLIC;
+      CREATE VIEW public.preparation_private_view AS SELECT preparation_no_usage.private_definer() AS value;
+      GRANT SELECT ON public.preparation_private_view TO PUBLIC;
+      CREATE SEQUENCE public.preparation_public_sequence;
+      CREATE FUNCTION public.preparation_public_definer() RETURNS integer
+        LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
+      CREATE PROCEDURE public.preparation_public_procedure()
+        LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN NULL; END';
+      CREATE FUNCTION public.preparation_public_trigger() RETURNS trigger
+        LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN INSERT INTO public.preparation_public_probe VALUES (NEW.value); RETURN NEW; END';
+      REVOKE EXECUTE ON FUNCTION public.preparation_public_definer() FROM PUBLIC;
+      REVOKE EXECUTE ON PROCEDURE public.preparation_public_procedure() FROM PUBLIC;
+      REVOKE EXECUTE ON FUNCTION public.preparation_public_trigger() FROM PUBLIC;
+    `,
+      );
+      const grant = `GRANT ${privilege} ON ${object} TO PUBLIC`;
+      const revoke = `REVOKE ${privilege} ON ${object} FROM PUBLIC`;
+      pg.query(db, grant);
+      expect(() =>
+        pg.query(db, renderHistorical89PreparationPrepare(b).sql),
+      ).toThrow("preparation_catalog_attestation");
+      expect(
+        pg.query(
+          db,
+          `
+      SELECT count(*) FROM pg_roles WHERE rolname IN
+        ('reviewrouter_operation_custody_reader','reviewrouter_operation_custody_owner')
+    `,
+        ),
+      ).toBe("0");
+      // A repeat still fails: preflight did not silently remove the PUBLIC grant.
+      expect(() =>
+        pg.query(db, renderHistorical89PreparationPrepare(b).sql),
+      ).toThrow("preparation_catalog_attestation");
+      pg.query(db, revoke);
+      const baseline = read(db, renderHistorical89PreparationPrepare(b).sql);
+      pg.query(db, grant);
+      if (object === "SEQUENCE preparation_no_usage.private_sequence") {
+        const sequenceOid = pg.query(
+          db,
+          "SELECT 'preparation_no_usage.private_sequence'::regclass::oid",
+        );
+        expect(
+          pg.query(
+            db,
+            `SELECT nextval(${sequenceOid}::oid::regclass)`,
+            "reviewrouter_operation_custody_reader",
+          ),
+        ).toBe("1");
+      }
+      if (object === "FUNCTION preparation_no_usage.private_definer()") {
+        expect(
+          pg.query(
+            db,
+            "SELECT value FROM public.preparation_private_view",
+            "reviewrouter_operation_custody_reader",
+          ),
+        ).toBe("1");
+        expect(
+          pg.query(db, "SELECT value FROM public.preparation_public_probe"),
+        ).toBe("1");
+      }
+      if (object === "FUNCTION public.preparation_public_trigger()") {
+        // A reader can attach a PUBLIC definer trigger to its own temporary table.
+        pg.query(
+          db,
+          `CREATE TEMP TABLE preparation_trigger_input (value integer);
+        CREATE TRIGGER exploit AFTER INSERT ON preparation_trigger_input
+          FOR EACH ROW EXECUTE FUNCTION public.preparation_public_trigger();
+        INSERT INTO preparation_trigger_input VALUES (1);`,
+          "reviewrouter_operation_custody_reader",
+        );
+        expect(
+          pg.query(db, "SELECT value FROM public.preparation_public_probe"),
+        ).toBe("1");
+      }
+      expect(() =>
+        pg.query(
+          db,
+          renderHistorical89PreparationReadSql(b),
+          "reviewrouter_operation_custody_reader",
+        ),
+      ).toThrow("preparation_catalog_attestation");
+      const digest = renderManagedEvidenceDigest({
+        publicPrivilege: privilege,
+      });
+      expect(() =>
+        stageObservation(b, 1, "recoveryIdentitySha256", digest),
+      ).toThrow("preparation_catalog_attestation");
+      pg.query(db, revoke);
+      expect(
+        read(
+          db,
+          renderHistorical89PreparationReadSql(b),
+          "reviewrouter_operation_custody_reader",
+        ),
+      ).toEqual(baseline);
+      expect(
+        stageObservation(b, 1, "recoveryIdentitySha256", digest).revision,
+      ).toBe("2");
+    },
+  );
+
+  it("allows PUBLIC schema USAGE, invoker functions and database TEMP", () => {
+    const db = clone();
+    const b = stagedIdentity(db);
+    pg.query(
+      db,
+      `
+      GRANT USAGE ON SCHEMA public TO PUBLIC;
+      GRANT TEMPORARY ON DATABASE ${target} TO PUBLIC;
+      CREATE FUNCTION public.preparation_public_invoker() RETURNS integer
+        LANGUAGE sql SECURITY INVOKER AS 'SELECT 1';
+      GRANT EXECUTE ON FUNCTION public.preparation_public_invoker() TO PUBLIC;
+    `,
+    );
+    const baseline = read(db, renderHistorical89PreparationPrepare(b).sql);
+    expect(
+      pg.query(
+        db,
+        `
+      CREATE TEMP TABLE preparation_temp_probe (value integer);
+      SELECT public.preparation_public_invoker() + pg_catalog.length('x');
+    `,
+        "reviewrouter_operation_custody_reader",
+      ),
+    ).toBe("2");
+    expect(
+      read(
+        db,
+        renderHistorical89PreparationReadSql(b),
+        "reviewrouter_operation_custody_reader",
+      ),
+    ).toEqual(baseline);
+  });
+
+  it.each(["recoveryIdentitySha256", "externalFenceSha256"])(
+    "rejects owner DML containing JSON null evidence for %s",
+    (kind) => {
+      const db = clone();
+      const b = stagedIdentity(db);
+      const baseline = read(db, renderHistorical89PreparationPrepare(b).sql);
+      expect(() =>
+        pg.query(
+          db,
+          `
+        BEGIN;
+        GRANT reviewrouter_operation_custody_owner TO reviewrouter
+          WITH INHERIT TRUE, SET TRUE;
+        SET LOCAL ROLE reviewrouter_operation_custody_owner;
+        UPDATE release_operation_custody.historical89_preparation
+          SET revision=revision+1,evidence=jsonb_build_object('${kind}',NULL);
+        COMMIT;
+      `,
+        ),
+      ).toThrow("preparation_evidence_shape");
+      expect(
+        read(
+          db,
+          renderHistorical89PreparationReadSql(b),
+          "reviewrouter_operation_custody_reader",
+        ),
+      ).toEqual(baseline);
+      const digest = renderManagedEvidenceDigest({ validObservation: kind });
+      const observed = stageObservation(b, 1, kind, digest);
+      expect(observed.revision).toBe("2");
+      expect(observed.evidence).toEqual({ [kind]: digest });
+      expect(() =>
+        stageObservation(
+          b,
+          2,
+          kind,
+          renderManagedEvidenceDigest({ conflictingObservation: kind }),
+        ),
+      ).toThrow("preparation_evidence_conflict");
+      expect(
+        read(
+          db,
+          renderHistorical89PreparationReadSql(b),
+          "reviewrouter_operation_custody_reader",
+        ),
+      ).toEqual(observed);
+    },
+  );
+
+  it("denies restricted-role writes and owner-only transitions", () => {
+    const b = stagedIdentity(clone());
+    pg.query(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+    for (const role of [
+      "reviewrouter",
+      "reviewrouter_operation_custody_reader",
+      "reviewrouter_api",
+    ])
+      for (const statement of [
+        "UPDATE release_operation_custody.historical89_preparation SET revision=revision+1",
+        "DELETE FROM release_operation_custody.historical89_preparation",
+        "TRUNCATE release_operation_custody.historical89_preparation",
+      ])
+        expect(() => pg.query(b.databaseName, statement, role)).toThrow(
+          /permission denied/u,
+        );
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        renderHistorical89PreparationService(b, {
+          expectedRevision: 1,
+          serviceId: "srv-disposable",
+          phase: "intent",
+          digest: renderManagedEvidenceDigest({ disposable: true }),
+        }).sql,
+        "reviewrouter_operation_custody_reader",
+      ),
+    ).toThrow("preparation_database_identity");
+  });
+
+  it("enforces immutable identity, original grants, and monotonic revision in the table itself", () => {
+    const b = stagedIdentity(clone());
+    pg.query(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+    for (const update of [
+      "identity=jsonb_set(identity,'{operationId}',to_jsonb('99999999-2222-3333-4444-555555555555'::text))",
+      "original_connect='{}'::jsonb",
+    ])
+      expect(() =>
+        pg.query(
+          b.databaseName,
+          `UPDATE release_operation_custody.historical89_preparation SET ${update},revision=revision+1`,
+          "postgres",
+        ),
+      ).toThrow("preparation_identity_immutable");
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        "UPDATE release_operation_custody.historical89_preparation SET revision=revision+2",
+        "postgres",
+      ),
+    ).toThrow("preparation_revision");
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        "DELETE FROM release_operation_custody.historical89_preparation",
+        "postgres",
+      ),
+    ).toThrow("preparation_delete_forbidden");
+    expect(
+      read(b.databaseName, renderHistorical89PreparationReadSql(b)).revision,
+    ).toBe("1");
+  });
 });
