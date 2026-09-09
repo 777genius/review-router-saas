@@ -136,6 +136,7 @@ export type ReviewActionV2E2EFlow = Readonly<{
 }>;
 
 export type ReviewActionV2E2EAuthorization = Readonly<{
+  sourceRunAttempt?: string;
   authorizationId: string;
   authorizationToken: string;
   reviewRevisionHash: string;
@@ -339,10 +340,11 @@ export class ReviewActionV2E2EHarness {
     await this.prisma.$disconnect();
   }
 
-  async authorize(): Promise<ReviewActionV2E2EAuthorization> {
-    const oidcToken = await this.signOidcToken();
+  async authorize(input: { readonly sourceRunAttempt?: string } = {}): Promise<ReviewActionV2E2EAuthorization> {
+    const runAttempt = input.sourceRunAttempt ?? "1";
+    const oidcToken = await this.signOidcToken(runAttempt);
     const request: ReviewRunAuthorizeRequest = {
-      ...envelope(`${this.prefix}-authorize`),
+      ...envelope(`${this.prefix}-authorize-${runAttempt}`),
       oidcToken,
       supportedProtocols: [
         {
@@ -365,6 +367,7 @@ export class ReviewActionV2E2EHarness {
       ),
     );
     return {
+      sourceRunAttempt: runAttempt,
       authorizationId,
       authorizationToken,
       reviewRevisionHash: requiredString(facts.reviewRevisionHash),
@@ -450,7 +453,7 @@ export class ReviewActionV2E2EHarness {
         assignmentManifestHash,
         workSlotsCanonicalJson: canonicalJson(workSlots),
         sourceRunId,
-        sourceRunAttempt: "1",
+        sourceRunAttempt: authorized.sourceRunAttempt ?? "1",
       },
     );
     const started = await requiredHandler(
@@ -1346,7 +1349,7 @@ export class ReviewActionV2E2EHarness {
     });
   }
 
-  private async signOidcToken(): Promise<string> {
+  private async signOidcToken(runAttempt: string): Promise<string> {
     this.oidcOrdinal += 1;
     const keyPair = oidcSigningKeys.get(this.fakeGitHub.options.oidcKeyId);
     if (!keyPair) throw new Error("review_v2_e2e_oidc_signing_key_missing");
@@ -1358,7 +1361,7 @@ export class ReviewActionV2E2EHarness {
       event_name: "pull_request",
       ref: `refs/pull/${pullRequestNumber}/merge`,
       run_id: sourceRunId,
-      run_attempt: "1",
+      run_attempt: runAttempt,
       workflow_ref: `${owner}/${repo}/.github/workflows/reviewrouter.yml@refs/pull/${pullRequestNumber}/merge`,
       workflow_sha: this.fakeGitHub.revision.headSha,
       job_workflow_ref: `777genius/review-router/.github/workflows/reviewrouter-execution-reusable.yml@${actionCommitSha}`,

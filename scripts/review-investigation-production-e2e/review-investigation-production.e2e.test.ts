@@ -199,6 +199,13 @@ describeWithDatabase.sequential(
           await fixture.base.runWorkerUntilSettled();
           delete fixture.emergency.beforeRead;
           if (boundary === "worker") {
+            expect(await fixture.client.reviewCompletionProcess.findUniqueOrThrow({
+              where: { executionId: finalized.artifacts[0]!.executionId },
+            })).toMatchObject({
+              state: "publication_not_applied",
+              lastSafeReason: "publication_failed_no_effect",
+              nextActionAt: null,
+            });
             expect(await fixture.client.reviewPublicationAuditTombstoneV2.findMany()).toEqual(
               expect.arrayContaining([expect.objectContaining({
                 finalOutcome: "failed_no_effect",
@@ -435,7 +442,17 @@ describeWithDatabase.sequential(
 
 async function assertLegacyContinuity(fixture: ReviewInvestigationProductionE2EHarness) {
   expect(fixture.emergency.disabled).toBe(true);
-  const authorization = await fixture.base.authorize();
+  // Authorization ownership includes the source run attempt; a new request
+  // or OIDC jti alone still restores/conflicts with the original authorization.
+  const prior = await fixture.client.reviewRunAuthorization.findMany({
+    select: { authorizationId: true, sourceRunAttempt: true },
+  });
+  const sourceRunAttempt = String(Math.max(1, ...prior.map(row => Number(row.sourceRunAttempt))) + 1);
+  const authorization = await fixture.base.authorize({ sourceRunAttempt });
+  expect(prior.map(row => row.authorizationId)).not.toContain(authorization.authorizationId);
+  expect(await fixture.client.reviewRunAuthorization.findUniqueOrThrow({
+    where: { authorizationId: authorization.authorizationId },
+  })).toMatchObject({ sourceRunAttempt });
   expect(authorization.authorizationToken.length).toBeGreaterThan(0);
 
   const legacy = await fixture.base.createCommittedFlow({ authorization });

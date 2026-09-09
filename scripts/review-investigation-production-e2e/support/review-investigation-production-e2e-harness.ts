@@ -625,11 +625,15 @@ export class ReviewInvestigationProductionE2EHarness {
         lease,
         `${input.label}-discovery-${discoveryOrdinal}`,
       );
-      await input.boundary?.(
-        "committed",
-        () => requiredHandler(this.routes.investigation.commitTurn).execute(commit.request),
-        commit.read.investigationId,
-      );
+      // Discovery can commit without a finding. Exercise immutable Findings
+      // restoration against the actual finding-bearing commit and its request.
+      if (commit.findingCount > 0) {
+        await input.boundary?.(
+          "committed",
+          () => requiredHandler(this.routes.investigation.commitTurn).execute(commit.request),
+          commit.read.investigationId,
+        );
+      }
       current = commit.read;
       if (discoveryOrdinal === 1 && input.restartAfterFirstCommit) {
         await this.restartControlPlane();
