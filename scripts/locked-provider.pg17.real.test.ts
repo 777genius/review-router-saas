@@ -2,7 +2,7 @@ import { lockCodexRotatingCurrentProvider } from "../packages/features/action-co
 import {
   createVersionedSecretWorkflowSourceAttestation,
   WorkflowSourceTrust,
-} from "@reviewrouter/features-codex-oauth-rotating";
+} from "../packages/features/codex-oauth-rotating/src/index";
 import { PrismaCodexRotatingOAuthRepository } from "../packages/features/action-control-plane/src/infrastructure/prisma/prisma-codex-rotating-oauth-repository";
 import { createHash } from "node:crypto";
 import { resolveCodexRotatingSetupManifestForNonce } from "../apps/web/src/server/codex-rotating-setup-manifest";
