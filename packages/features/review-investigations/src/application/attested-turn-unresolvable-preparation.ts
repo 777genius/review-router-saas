@@ -2,10 +2,15 @@ import {
   InvestigationOperationKind,
   type VerifiedInvestigationOperationEvidence,
 } from "../domain/investigation-operation-evidence";
-import { InvestigationObligationState } from "../domain/review-investigation-types";
+import {
+  InvestigationObligationKind,
+  InvestigationObligationState,
+} from "../domain/review-investigation-types";
 import type { ReviewInvestigation } from "../domain/review-investigation";
 import {
   InvestigationEvidenceRequirementKind,
+  ObligationClosureDecisionKind,
+  VersionedObligationClosurePolicy,
   parseInvestigationEvidenceRequirement,
 } from "../domain/obligation-closure-policy";
 import type { VerifiedOperationEvidenceIndex } from "./verified-operation-evidence-index";
@@ -35,6 +40,10 @@ export class AttestedTurnUnresolvablePreparation {
     const turn = input.investigation.activeTurn;
     if (turn === null) throw invalidClaim();
     const assigned = new Set(turn.obligationIds);
+    const inventoryObligations = input.investigation.obligations.filter(
+      (item) => item.kind === InvestigationObligationKind.InventoryWitness,
+    );
+    const closurePolicy = new VersionedObligationClosurePolicy();
     const obligations = new Map(
       input.investigation.obligations.map((item) => [item.obligationId, item]),
     );
@@ -73,9 +82,18 @@ export class AttestedTurnUnresolvablePreparation {
         const evidence = claim.evidenceOperationReceiptIds.map((receiptId) =>
           input.operationEvidence.get(receiptId),
         );
+        // Re-prove the investigation's inventory scope without changing its
+        // obligation state; an unrelated complete inventory is insufficient.
         if (
           evidence.some((item) => item === undefined) ||
-          !evidence.some(isCanonicalInventoryEvidence)
+          !inventoryObligations.some(
+            (inventory) =>
+              closurePolicy.decide({
+                obligation: inventory,
+                operations: evidence.filter(isCanonicalInventoryEvidence),
+                revision: input.investigation.revision,
+              }).kind === ObligationClosureDecisionKind.Accepted,
+          )
         ) {
           return [];
         }
@@ -93,10 +111,9 @@ export class AttestedTurnUnresolvablePreparation {
 
 function isCanonicalInventoryEvidence(
   evidence: VerifiedInvestigationOperationEvidence | undefined,
-): boolean {
+): evidence is VerifiedInvestigationOperationEvidence {
   return (
-    evidence?.operationKind === InvestigationOperationKind.CanonicalInventory &&
-    evidence.complete
+    evidence?.operationKind === InvestigationOperationKind.CanonicalInventory
   );
 }
 

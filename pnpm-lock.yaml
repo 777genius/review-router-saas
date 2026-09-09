@@ -98,6 +98,9 @@ importers:
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.3.0(jiti@2.6.1))
+      '@prisma/adapter-pg':
+        specifier: 7.8.0
+        version: 7.8.0
       '@tailwindcss/postcss':
         specifier: 4.2.4
         version: 4.2.4
@@ -597,6 +600,9 @@ importers:
 
   packages/features/entitlements:
     dependencies:
+      '@reviewrouter/platform-db':
+        specifier: workspace:*
+        version: link:../../platform/db
       '@prisma/client':
         specifier: ^7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
@@ -615,6 +621,9 @@ importers:
       '@reviewrouter/features-outbox':
         specifier: workspace:*
         version: link:../outbox
+      '@reviewrouter/platform-db':
+        specifier: workspace:*
+        version: link:../../platform/db
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
@@ -654,15 +663,15 @@ importers:
       '@aws-sdk/credential-providers':
         specifier: 3.1111.0
         version: 3.1111.0
-      '@smithy/node-http-handler':
-        specifier: 4.11.3
-        version: 4.11.3
       '@openai/codex':
         specifier: 0.147.0
         version: 0.147.0
       '@prisma/client':
         specifier: ^7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@smithy/node-http-handler':
+        specifier: 4.11.3
+        version: 4.11.3
       fastify:
         specifier: ^5.10.0
         version: 5.10.0
@@ -775,6 +784,9 @@ importers:
       '@reviewrouter/features-workflow-provisioning':
         specifier: workspace:*
         version: link:../workflow-provisioning
+      '@reviewrouter/platform-db':
+        specifier: workspace:*
+        version: link:../../platform/db
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
@@ -784,6 +796,9 @@ importers:
 
   packages/features/review-config:
     dependencies:
+      '@reviewrouter/platform-db':
+        specifier: workspace:*
+        version: link:../../platform/db
       '@prisma/client':
         specifier: ^7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
@@ -902,13 +917,12 @@ importers:
       '@prisma/client':
         specifier: 7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
-      '@reviewrouter/platform-signed-capabilities':
-        specifier: workspace:*
-        version: link:../../platform/signed-capabilities
-    devDependencies:
       '@reviewrouter/platform-db':
         specifier: workspace:*
         version: link:../../platform/db
+      '@reviewrouter/platform-signed-capabilities':
+        specifier: workspace:*
+        version: link:../../platform/signed-capabilities
 
   packages/features/review-snapshots:
     dependencies:

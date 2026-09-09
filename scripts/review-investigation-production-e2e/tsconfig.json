@@ -2,6 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "types": ["node", "vitest/globals"]
   },
   "include": ["./**/*.ts", "../review-action-v2-production-e2e/support/**/*.ts"]

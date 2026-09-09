@@ -1,3 +1,5 @@
+import { tokenClaimsMatchAuthorization } from "./token-claims-match-authorization";
+import type { ProducerRelease } from "../../domain/producer-release";
 import type {
   ReviewRunAuthorization,
   ReviewRunRevision,
@@ -25,6 +27,7 @@ import type {
   ReviewRunAuthorizationTokenPort,
   Sha256DigestPort,
   VerifiedReviewRunAuthorizationToken,
+  VerifiedReviewRunAuthorizationTokenWithMetadata,
 } from "../ports/platform-ports";
 import type {
   ProducerReleaseQueryPort,
@@ -146,6 +149,7 @@ export class ManageReviewRunAuthorizations {
   async authorizeReviewRun(input: {
     readonly verifiedIdentity: VerifiedScmRunIdentity;
     readonly producerReleaseId: string;
+    readonly expectedBaseProducerRelease?: ProducerRelease;
     readonly protocolOfferHash: string;
     readonly oidcReplayKeyHash: string;
     readonly providerVoteLanes: readonly ProviderVoteLane[];
@@ -214,6 +218,12 @@ export class ManageReviewRunAuthorizations {
             repositoryIdentityVersion: eligibility.repository.version,
             mutationAuthorityVersion: eligibility.authority.version,
             producerRelease: eligibility.release,
+            ...(input.expectedBaseProducerRelease
+              ? {
+                  expectedBaseProducerRelease:
+                    input.expectedBaseProducerRelease,
+                }
+              : {}),
             protocolLimitsDigest: eligibility.limits.limitsDigest,
             operationalSloDigest: eligibility.slo.sloDigest,
             safetySnapshot: eligibility.safety,
@@ -414,6 +424,13 @@ export class ManageReviewRunAuthorizations {
     } catch {
       return { status: ReviewRunAuthorizationTokenResolutionStatus.Invalid };
     }
+    return this.resolveVerifiedClaims(token, now);
+  }
+
+  private async resolveVerifiedClaims(
+    token: VerifiedReviewRunAuthorizationToken,
+    now: Date,
+  ): Promise<ReviewRunAuthorizationTokenResolution> {
     const authorization =
       await this.dependencies.authorizationQueries.findReviewRunAuthorizationById(
         token.authorizationId,
@@ -437,6 +454,32 @@ export class ManageReviewRunAuthorizations {
       status: ReviewRunAuthorizationTokenResolutionStatus.Valid,
       authorization,
     };
+  }
+
+  /** Internal preflight only: the future producer must recheck a locked DB view.
+   * Uses the current application clock; does not reverify historical credentials.
+   */
+  async resolveVerifiedReviewRunAuthorizationToken(input: {
+    readonly token: string;
+  }): Promise<VerifiedReviewRunAuthorizationTokenResolution> {
+    const now = this.dependencies.clock.now();
+    let token: VerifiedReviewRunAuthorizationTokenWithMetadata;
+    try {
+      if (!this.dependencies.tokens.verifyWithMetadata) {
+        return { status: ReviewRunAuthorizationTokenResolutionStatus.Invalid };
+      }
+      token = await this.dependencies.tokens.verifyWithMetadata({
+        token: input.token,
+        now,
+      });
+    } catch {
+      return { status: ReviewRunAuthorizationTokenResolutionStatus.Invalid };
+    }
+    const resolution = await this.resolveVerifiedClaims(token, now);
+    return resolution.status ===
+      ReviewRunAuthorizationTokenResolutionStatus.Valid
+      ? { ...resolution, verifiedToken: token }
+      : resolution;
   }
 
   private async loadEligibility(
@@ -555,36 +598,8 @@ export class ManageReviewRunAuthorizations {
         pullRequestNumber: authorization.pullRequestNumber,
       }),
     );
-    const issuedAt = authorization.renewedAt ?? authorization.createdAt;
-    const expectedLaneIds = authorization.providerVoteLanes.map(
-      (lane) => lane.providerVoteIdentityHash,
-    );
-    return (
-      token.capabilityId === authorization.authorizationId &&
-      token.authorizationId === authorization.authorizationId &&
-      token.issuer === authorization.tokenIssuer &&
-      token.audience === authorization.tokenAudience &&
-      token.scopeHash === scopeHash &&
-      token.producerReleaseId === authorization.producerReleaseId &&
-      token.selectedProtocolVersion === authorization.selectedProtocolVersion &&
-      token.schemaDigest === authorization.schemaDigest &&
-      token.protocolLimitsProfileId === authorization.protocolLimitsProfileId &&
-      token.operationalSloProfileId === authorization.operationalSloProfileId &&
-      token.mutationEpoch === authorization.mutationEpoch &&
-      token.authorizationSafetyDecisionHash ===
-        authorization.authorizationSafetyDecisionHash &&
-      token.providerVoteLaneIds.length === expectedLaneIds.length &&
-      token.providerVoteLaneIds.every(
-        (laneId, index) => laneId === expectedLaneIds[index],
-      ) &&
-      numericDate(token.issuedAt) === numericDate(issuedAt) &&
-      numericDate(token.expiresAt) === numericDate(authorization.expiresAt)
-    );
+    return tokenClaimsMatchAuthorization(token, authorization, scopeHash);
   }
-}
-
-function numericDate(value: Date): number {
-  return Math.floor(value.getTime() / 1_000);
 }
 
 function verifiedIdentityMatches(
@@ -616,3 +631,17 @@ function denied(
     reason,
   };
 }
+
+export type VerifiedReviewRunAuthorizationTokenResolution =
+  | (Extract<
+      ReviewRunAuthorizationTokenResolution,
+      { status: ReviewRunAuthorizationTokenResolutionStatus.Valid }
+    > & {
+      readonly verifiedToken: VerifiedReviewRunAuthorizationTokenWithMetadata;
+    })
+  | Exclude<
+      ReviewRunAuthorizationTokenResolution,
+      { status: ReviewRunAuthorizationTokenResolutionStatus.Valid }
+    >;
+
+export { tokenClaimsMatchAuthorization } from "./token-claims-match-authorization";

@@ -53,286 +53,372 @@ import {
 const hash = (character: string) => character.repeat(64);
 
 describe("CommitAttestedInvestigationTurn", () => {
-  it("turns an attested binary suggestion into a deterministic unresolvable decision", async () => {
-    const store = new InMemoryInvestigationStore();
-    const authority = new CurrentInvestigationExecutionAuthority();
-    const clock = new FixedInvestigationClock(
-      new Date("2026-08-02T10:00:00.000Z"),
-    );
-    const digest = new NodeSha256InvestigationDigest();
-    const revisionHash = hash("4");
-    const path = "assets/logo.bin";
-    const pathHash = await digest.digestUtf8(path);
-    const inventoryPathSetHash = await digest.digestUtf8(
-      JSON.stringify([pathHash]),
-    );
-    const inventoryRequirement = {
-      requirementVersion: obligationEvidenceRequirementVersionV2,
-      kind: InvestigationEvidenceRequirementKind.CompleteInventory,
-      reviewRevisionHash: revisionHash,
-      treeOid: "3".repeat(40),
-      aggregateItemCount: 1,
-      aggregateHash: hash("2"),
-      aggregatePathCount: 1,
-      aggregatePathSetHash: inventoryPathSetHash,
-    } as const;
-    const boundaryRequirement = {
-      requirementVersion: obligationEvidenceRequirementVersion,
-      kind: InvestigationEvidenceRequirementKind.BinaryArtifactBoundary,
-      path,
-      pathHash,
-      revision: InvestigationOperationRevision.Head,
-      contentKind: InvestigationBinaryArtifactContentKind.Binary,
-      mode: "100644",
-      objectOid: "5".repeat(40),
-      byteCount: 128,
-      status: "added",
-    } as const;
-    const opened = await new OpenReviewInvestigation(
-      store,
-      authority,
-      digest,
-      digestBackedInvestigationManifestIdentity(digest),
-      clock,
-    ).execute({
-      commandId: "open-binary-unresolvable",
-      scope: {
-        workspaceId: "workspace-1",
-        repositoryConnectionId: "repository-1",
-        scmRepositoryIdentityId: "identity-1",
-        pullRequestNumber: 1,
-        trustDomain: "trusted_managed",
-        authorizationScopeHash: hash("9"),
+  // Production application policy integration with an in-memory store and
+  // verifier stub; this does not exercise a live provider or a real database.
+  it.each(
+    [
+      {
+        contentKind: InvestigationBinaryArtifactContentKind.Binary,
+        path: "assets/logo.bin",
+        mode: "100644",
+        byteCount: 128,
       },
-      revision: {
-        baseSha: "1".repeat(40),
-        mergeBaseSha: "2".repeat(40),
-        headSha: "3".repeat(40),
+      {
+        contentKind: InvestigationBinaryArtifactContentKind.LfsPointer,
+        path: "assets/model.lfs",
+        mode: "100644",
+        byteCount: 128,
+      },
+      {
+        contentKind: InvestigationBinaryArtifactContentKind.Gitlink,
+        path: "vendor/library",
+        mode: "160000",
+        byteCount: null,
+      },
+    ].flatMap((artifact) =>
+      (
+        [
+          "complete",
+          "missing",
+          "incomplete",
+          "wrong-revision",
+          "wrong-pathset",
+        ] as const
+      ).map((evidenceCase) => ({ ...artifact, evidenceCase })),
+    ),
+  )(
+    "$contentKind with $evidenceCase inventory evidence uses production terminal policy",
+    async ({ contentKind, path, mode, byteCount, evidenceCase }) => {
+      const store = new InMemoryInvestigationStore();
+      const authority = new CurrentInvestigationExecutionAuthority();
+      const clock = new FixedInvestigationClock(
+        new Date("2026-08-02T10:00:00.000Z"),
+      );
+      const digest = new NodeSha256InvestigationDigest();
+      const revisionHash = hash("4");
+      const pathHash = await digest.digestUtf8(path);
+      const inventoryPathSetHash = await digest.digestUtf8(
+        JSON.stringify([pathHash]),
+      );
+      const inventoryRequirement = {
+        requirementVersion: obligationEvidenceRequirementVersionV2,
+        kind: InvestigationEvidenceRequirementKind.CompleteInventory,
         reviewRevisionHash: revisionHash,
-      },
-      executionId: "execution-1",
-      workSlotId: "work-slot-1",
-      stableReviewUnitKey: "review-unit-binary",
-      providerVoteLaneId: "provider-lane-1",
-      providerStrategyId: "codex-primary",
-      investigationManifestCanonicalJson: "{}",
-      investigationManifestHash:
-        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
-      runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
-      contract: {
-        ...reviewInvestigationCoverageProfileV3,
-        producerReleaseId: "release-1",
-      },
-      policy: {
-        policyId: "policy-1",
-        maxObligations: 32,
-        maxExpansionDepth: 4,
-        maxSemanticTurns: 8,
-        maxOperationalAttempts: 4,
-        maxCriticCycles: 2,
-        maxFindings: 32,
-        maxProposalsPerTurn: 16,
-        maxReceiptsPerTurn: 32,
-        maxSeedProbesPerFile: 48,
-        maxSeedProbesOverall: 384,
-      },
-      seedObligations: [
-        {
-          kind: InvestigationObligationKind.InventoryWitness,
-          canonicalSubject:
-            canonicalInventoryObligationSubjectV2(inventoryRequirement),
-          canonicalRequirement:
-            canonicalInvestigationEvidenceRequirement(inventoryRequirement),
-          riskPriority: 1_000_000,
+        treeOid: "3".repeat(40),
+        aggregateItemCount: 1,
+        aggregateHash: hash("2"),
+        aggregatePathCount: 1,
+        aggregatePathSetHash: inventoryPathSetHash,
+      } as const;
+      const boundaryRequirement = {
+        requirementVersion: obligationEvidenceRequirementVersion,
+        kind: InvestigationEvidenceRequirementKind.BinaryArtifactBoundary,
+        path,
+        pathHash,
+        revision: InvestigationOperationRevision.Head,
+        contentKind,
+        mode,
+        objectOid: "5".repeat(40),
+        byteCount,
+        status: "added",
+      } as const;
+      const opened = await new OpenReviewInvestigation(
+        store,
+        authority,
+        digest,
+        digestBackedInvestigationManifestIdentity(digest),
+        clock,
+      ).execute({
+        commandId: "open-binary-unresolvable",
+        scope: {
+          workspaceId: "workspace-1",
+          repositoryConnectionId: "repository-1",
+          scmRepositoryIdentityId: "identity-1",
+          pullRequestNumber: 1,
+          trustDomain: "trusted_managed",
+          authorizationScopeHash: hash("9"),
         },
-        {
-          kind: InvestigationObligationKind.ChangedContent,
-          canonicalSubject: canonicalFileObligationSubject({
-            pathHash,
-            revision: InvestigationOperationRevision.Head,
-          }),
-          canonicalRequirement: canonicalInvestigationEvidenceRequirement({
-            requirementVersion: obligationEvidenceRequirementVersionV2,
-            kind: InvestigationEvidenceRequirementKind.CompleteChangedFile,
-            path,
-            pathHash,
-            revision: InvestigationOperationRevision.Head,
-          }),
-          riskPriority: 900_000,
+        revision: {
+          baseSha: "1".repeat(40),
+          mergeBaseSha: "2".repeat(40),
+          headSha: "3".repeat(40),
+          reviewRevisionHash: revisionHash,
         },
-        {
-          kind: InvestigationObligationKind.BinaryArtifact,
-          canonicalSubject:
-            canonicalBinaryArtifactBoundarySubject(boundaryRequirement),
-          canonicalRequirement:
-            canonicalInvestigationEvidenceRequirement(boundaryRequirement),
-          riskPriority: 800_000,
+        executionId: "execution-1",
+        workSlotId: "work-slot-1",
+        stableReviewUnitKey: "review-unit-binary",
+        providerVoteLaneId: "provider-lane-1",
+        providerStrategyId: "codex-primary",
+        investigationManifestCanonicalJson: "{}",
+        investigationManifestHash:
+          "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        runtimeProfile:
+          ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
+        contract: {
+          ...reviewInvestigationCoverageProfileV3,
+          producerReleaseId: "release-1",
         },
-      ],
-      initialReceipts: [],
-    });
-    const inventoryPlan = await new PlanNextInvestigationTurn(
-      store,
-      authority,
-      digest,
-      clock,
-    ).execute({
-      commandId: "plan-binary-unresolvable",
-      investigationId: opened.investigationId,
-      expectedVersion: opened.version,
-      leaseDurationMs: 300_000,
-      maxObligationsForTurn: 8,
-    });
-    const provisional = (await store.findById(opened.investigationId))!;
-    const inventory = provisional.obligations.find(
-      (item) => item.kind === InvestigationObligationKind.InventoryWitness,
-    )!;
-    const inventoryReceiptId = hash("9");
-    const inventoryObservation = observationFixture({
-      turnId: inventoryPlan.turn!.turnId,
-      dossierVersion: inventoryPlan.version,
-      obligationId: inventory.obligationId,
-      operationReceiptId: inventoryReceiptId,
-    });
-    const inventoryTerminalOutcomeHash = await digest.digestUtf8(
-      canonicalInvestigationTerminalObservation(inventoryObservation),
-    );
-    const inventoryEvidence = {
-      verify: vi
-        .fn<InvestigationTurnEvidencePort["verify"]>()
-        .mockResolvedValue({
-          acceptedAttestationId: "attestation-1",
-          acceptedAttestationHash: hash("8"),
-          terminalOutcomeHash: inventoryTerminalOutcomeHash,
-          gatewayPolicyVersion:
-            reviewInvestigationCoverageProfileV3.gatewayPolicyVersion,
-          actualProviderKind: InvestigationTurnProviderKind.Codex,
-          operations: [
-            inventoryOperationEvidence({
-              operationReceiptId: inventoryReceiptId,
+        policy: {
+          policyId: "policy-1",
+          maxObligations: 32,
+          maxExpansionDepth: 4,
+          maxSemanticTurns: 8,
+          maxOperationalAttempts: 4,
+          maxCriticCycles: 2,
+          maxFindings: 32,
+          maxProposalsPerTurn: 16,
+          maxReceiptsPerTurn: 32,
+          maxSeedProbesPerFile: 48,
+          maxSeedProbesOverall: 384,
+        },
+        seedObligations: [
+          {
+            kind: InvestigationObligationKind.InventoryWitness,
+            canonicalSubject:
+              canonicalInventoryObligationSubjectV2(inventoryRequirement),
+            canonicalRequirement:
+              canonicalInvestigationEvidenceRequirement(inventoryRequirement),
+            riskPriority: 1_000_000,
+          },
+          {
+            kind: InvestigationObligationKind.ChangedContent,
+            canonicalSubject: canonicalFileObligationSubject({
               pathHash,
-              pathSetHash: inventoryPathSetHash,
-              requirement: inventoryRequirement,
+              revision: InvestigationOperationRevision.Head,
             }),
-          ],
+            canonicalRequirement: canonicalInvestigationEvidenceRequirement({
+              requirementVersion: obligationEvidenceRequirementVersionV2,
+              kind: InvestigationEvidenceRequirementKind.CompleteChangedFile,
+              path,
+              pathHash,
+              revision: InvestigationOperationRevision.Head,
+            }),
+            riskPriority: 900_000,
+          },
+          {
+            kind: InvestigationObligationKind.BinaryArtifact,
+            canonicalSubject:
+              canonicalBinaryArtifactBoundarySubject(boundaryRequirement),
+            canonicalRequirement:
+              canonicalInvestigationEvidenceRequirement(boundaryRequirement),
+            riskPriority: 800_000,
+          },
+        ],
+        initialReceipts: [],
+      });
+      const inventoryPlan = await new PlanNextInvestigationTurn(
+        store,
+        authority,
+        digest,
+        clock,
+      ).execute({
+        commandId: "plan-binary-unresolvable",
+        investigationId: opened.investigationId,
+        expectedVersion: opened.version,
+        leaseDurationMs: 300_000,
+        maxObligationsForTurn: 8,
+      });
+      const provisional = (await store.findById(opened.investigationId))!;
+      const inventory = provisional.obligations.find(
+        (item) => item.kind === InvestigationObligationKind.InventoryWitness,
+      )!;
+      const inventoryReceiptId = hash("9");
+      const inventoryObservation = observationFixture({
+        turnId: inventoryPlan.turn!.turnId,
+        dossierVersion: inventoryPlan.version,
+        obligationId: inventory.obligationId,
+        operationReceiptId: inventoryReceiptId,
+      });
+      const inventoryTerminalOutcomeHash = await digest.digestUtf8(
+        canonicalInvestigationTerminalObservation(inventoryObservation),
+      );
+      const inventoryEvidence = {
+        verify: vi
+          .fn<InvestigationTurnEvidencePort["verify"]>()
+          .mockResolvedValue({
+            acceptedAttestationId: "attestation-1",
+            acceptedAttestationHash: hash("8"),
+            terminalOutcomeHash: inventoryTerminalOutcomeHash,
+            gatewayPolicyVersion:
+              reviewInvestigationCoverageProfileV3.gatewayPolicyVersion,
+            actualProviderKind: InvestigationTurnProviderKind.Codex,
+            operations: [
+              inventoryOperationEvidence({
+                operationReceiptId: inventoryReceiptId,
+                pathHash,
+                pathSetHash: inventoryPathSetHash,
+                requirement: inventoryRequirement,
+              }),
+            ],
+          }),
+      };
+      const inventoryFence = await acquireTestLease(store, provisional, {
+        leaseId: "lease-inventory",
+        attemptId: "attempt-inventory",
+      });
+      const afterInventory = await new CommitAttestedInvestigationTurn(
+        store,
+        inventoryEvidence,
+        digest,
+        new CommitInvestigationTurn(store, authority, digest, clock),
+      ).execute({
+        commandId: "commit-binary-inventory",
+        investigationId: opened.investigationId,
+        expectedVersion: inventoryPlan.version,
+        turnId: inventoryPlan.turn!.turnId,
+        sourceAttemptId: "attempt-inventory",
+        sourceLeaseId: "lease-inventory",
+        sourceFencingToken: inventoryFence,
+        acceptedAttestationId: "attestation-1",
+        acceptedAttestationHash: hash("8"),
+        turnObservationHash: await digest.digestUtf8(
+          canonicalInvestigationTurnObservation(inventoryObservation),
+        ),
+        observation: inventoryObservation,
+      });
+      const planned = await new PlanNextInvestigationTurn(
+        store,
+        authority,
+        digest,
+        clock,
+      ).execute({
+        commandId: "plan-binary-boundary",
+        investigationId: opened.investigationId,
+        expectedVersion: afterInventory.version,
+        leaseDurationMs: 300_000,
+        maxObligationsForTurn: 8,
+      });
+      const current = (await store.findById(opened.investigationId))!;
+      const boundary = current.obligations.find(
+        (item) => item.kind === InvestigationObligationKind.BinaryArtifact,
+      )!;
+      const receiptId = await digest.digestUtf8("binary-receipt");
+      const observation = {
+        ...observationFixture({
+          turnId: planned.turn!.turnId,
+          dossierVersion: planned.version,
+          obligationId: boundary.obligationId,
+          operationReceiptId: receiptId,
+          closureClaim: false,
         }),
-    };
-    const inventoryFence = await acquireTestLease(store, provisional, {
-      leaseId: "lease-inventory",
-      attemptId: "attempt-inventory",
-    });
-    const afterInventory = await new CommitAttestedInvestigationTurn(
-      store,
-      inventoryEvidence,
-      digest,
-      new CommitInvestigationTurn(store, authority, digest, clock),
-    ).execute({
-      commandId: "commit-binary-inventory",
-      investigationId: opened.investigationId,
-      expectedVersion: inventoryPlan.version,
-      turnId: inventoryPlan.turn!.turnId,
-      sourceAttemptId: "attempt-inventory",
-      sourceLeaseId: "lease-inventory",
-      sourceFencingToken: inventoryFence,
-      acceptedAttestationId: "attestation-1",
-      acceptedAttestationHash: hash("8"),
-      turnObservationHash: await digest.digestUtf8(
-        canonicalInvestigationTurnObservation(inventoryObservation),
-      ),
-      observation: inventoryObservation,
-    });
-    const planned = await new PlanNextInvestigationTurn(
-      store,
-      authority,
-      digest,
-      clock,
-    ).execute({
-      commandId: "plan-binary-boundary",
-      investigationId: opened.investigationId,
-      expectedVersion: afterInventory.version,
-      leaseDurationMs: 300_000,
-      maxObligationsForTurn: 8,
-    });
-    const current = (await store.findById(opened.investigationId))!;
-    const boundary = current.obligations.find(
-      (item) => item.kind === InvestigationObligationKind.BinaryArtifact,
-    )!;
-    const receiptId = await digest.digestUtf8("binary-receipt");
-    const observation = {
-      ...observationFixture({
+        unresolvableClaims: [
+          {
+            obligationId: boundary.obligationId,
+            reason: "provider cannot decode this artifact",
+            evidenceOperationReceiptIds: [receiptId],
+          },
+        ],
+      } as const;
+      const terminalOutcomeHash = await digest.digestUtf8(
+        canonicalInvestigationTerminalObservation(observation),
+      );
+      const evidence = {
+        verify: vi
+          .fn<InvestigationTurnEvidencePort["verify"]>()
+          .mockResolvedValue({
+            acceptedAttestationId: "attestation-1",
+            acceptedAttestationHash: hash("8"),
+            terminalOutcomeHash,
+            gatewayPolicyVersion:
+              reviewInvestigationCoverageProfileV3.gatewayPolicyVersion,
+            actualProviderKind: InvestigationTurnProviderKind.Codex,
+            operations:
+              evidenceCase === "missing"
+                ? []
+                : [
+                    {
+                      ...inventoryOperationEvidence({
+                        operationReceiptId: receiptId,
+                        pathHash,
+                        pathSetHash: inventoryPathSetHash,
+                        requirement: inventoryRequirement,
+                      }),
+                      complete: evidenceCase !== "incomplete",
+                      nextCursorHash:
+                        evidenceCase === "incomplete" ? hash("a") : null,
+                      treeOid:
+                        evidenceCase === "wrong-revision"
+                          ? "1".repeat(40)
+                          : inventoryRequirement.treeOid,
+                      aggregatePathSetHash:
+                        evidenceCase === "wrong-pathset"
+                          ? hash("f")
+                          : inventoryRequirement.aggregatePathSetHash,
+                    },
+                  ],
+          }),
+      };
+      const fence = await acquireTestLease(store, current, {
+        leaseId: "lease-1",
+        attemptId: "attempt-1",
+      });
+      const result = await new CommitAttestedInvestigationTurn(
+        store,
+        evidence,
+        digest,
+        new CommitInvestigationTurn(store, authority, digest, clock),
+      ).execute({
+        commandId: "commit-binary-unresolvable",
+        investigationId: opened.investigationId,
+        expectedVersion: planned.version,
         turnId: planned.turn!.turnId,
-        dossierVersion: planned.version,
-        obligationId: boundary.obligationId,
-        operationReceiptId: receiptId,
-        closureClaim: false,
-      }),
-      unresolvableClaims: [
-        {
-          obligationId: boundary.obligationId,
-          reason: "provider cannot decode this artifact",
-          evidenceOperationReceiptIds: [receiptId],
-        },
-      ],
-    } as const;
-    const terminalOutcomeHash = await digest.digestUtf8(
-      canonicalInvestigationTerminalObservation(observation),
-    );
-    const evidence = {
-      verify: vi
-        .fn<InvestigationTurnEvidencePort["verify"]>()
-        .mockResolvedValue({
-          acceptedAttestationId: "attestation-1",
-          acceptedAttestationHash: hash("8"),
-          terminalOutcomeHash,
-          gatewayPolicyVersion:
-            reviewInvestigationCoverageProfileV3.gatewayPolicyVersion,
-          actualProviderKind: InvestigationTurnProviderKind.Codex,
-          operations: [
-            inventoryOperationEvidence({
-              operationReceiptId: receiptId,
-              pathHash,
-              pathSetHash: inventoryPathSetHash,
-              requirement: inventoryRequirement,
-            }),
-          ],
-        }),
-    };
-    const fence = await acquireTestLease(store, current, {
-      leaseId: "lease-1",
-      attemptId: "attempt-1",
-    });
-    const result = await new CommitAttestedInvestigationTurn(
-      store,
-      evidence,
-      digest,
-      new CommitInvestigationTurn(store, authority, digest, clock),
-    ).execute({
-      commandId: "commit-binary-unresolvable",
-      investigationId: opened.investigationId,
-      expectedVersion: planned.version,
-      turnId: planned.turn!.turnId,
-      sourceAttemptId: "attempt-1",
-      sourceLeaseId: "lease-1",
-      sourceFencingToken: fence,
-      acceptedAttestationId: "attestation-1",
-      acceptedAttestationHash: hash("8"),
-      turnObservationHash: await digest.digestUtf8(
-        canonicalInvestigationTurnObservation(observation),
-      ),
-      observation,
-    });
+        sourceAttemptId: "attempt-1",
+        sourceLeaseId: "lease-1",
+        sourceFencingToken: fence,
+        acceptedAttestationId: "attestation-1",
+        acceptedAttestationHash: hash("8"),
+        turnObservationHash: await digest.digestUtf8(
+          canonicalInvestigationTurnObservation(observation),
+        ),
+        observation,
+      });
 
-    expect(result.unresolvableObligationCount).toBe(1);
-    expect((await store.findById(opened.investigationId))!.obligations).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          obligationId: boundary.obligationId,
+      const committed = (await store.findById(opened.investigationId))!;
+      expect(committed.activeTurn).toBeNull();
+      expect(committed.certificate).toBeNull();
+      expect(committed.findings).toEqual([]);
+      expect(
+        committed.obligations.find(
+          (item) => item.obligationId === inventory.obligationId,
+        ),
+      ).toMatchObject({ state: "satisfied" });
+      expect(
+        committed.obligations.find(
+          (item) => item.kind === InvestigationObligationKind.ChangedContent,
+        ),
+      ).toMatchObject({ state: "open", receipt: null });
+
+      if (evidenceCase === "complete") {
+        expect(result.unresolvableObligationCount).toBe(1);
+        expect(committed.state).toBe(ReviewInvestigationState.Inconclusive);
+        expect(committed.conclusion).toBe("inconclusive");
+        expect(
+          committed.obligations.find(
+            (item) => item.obligationId === boundary.obligationId,
+          ),
+        ).toMatchObject({
           state: "unresolvable",
-          unresolvableReason: "specialized_artifact_decoder_unavailable:binary",
-        }),
-      ]),
-    );
-  });
+          receipt: null,
+          unresolvableReason: `specialized_artifact_decoder_unavailable:${contentKind}`,
+        });
+      } else {
+        // Even a verified attestation cannot make insufficient or unrelated
+        // inventory evidence prove this revision's unsupported boundary.
+        expect(result.unresolvableObligationCount).toBe(0);
+        expect(committed.state).toBe(ReviewInvestigationState.AwaitingTurn);
+        expect(committed.conclusion).toBeNull();
+        expect(
+          committed.obligations.find(
+            (item) => item.obligationId === boundary.obligationId,
+          ),
+        ).toMatchObject({
+          state: "open",
+          receipt: null,
+          unresolvableReason: null,
+        });
+      }
+    },
+  );
 
   it("binds an accepted gateway attestation and operation receipt", async () => {
     const fixture = await createFixture();

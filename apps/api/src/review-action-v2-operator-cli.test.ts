@@ -8,6 +8,7 @@ import {
 } from "@reviewrouter/features-review-run-control";
 import {
   inspectEnvironment,
+  inspectRepositoryReleaseSelection,
   inspectReleaseRegistrationEnvironment,
   parseArguments,
   parseInvestigationRolloutProvider,
@@ -24,6 +25,32 @@ import {
 } from "./review-action-v2-operator-cli";
 
 describe("review action v2 operator CLI", () => {
+  it("rejects ambiguous or missing selection preflight targets before registry reads", async () => {
+    const repository = {
+      id: "repo",
+      workspaceId: "workspace",
+      scmRepositoryIdentityId: "identity",
+    };
+    const queries = {
+      findProducerReleaseById: async () => {
+        throw new Error("unexpected registry read");
+      },
+      findProtocolLimitsProfileById: async () => {
+        throw new Error("unexpected registry read");
+      },
+    };
+    for (const repositories of [[], [repository, repository]]) {
+      await expect(
+        inspectRepositoryReleaseSelection({
+          repositories,
+          queries,
+          raw: undefined,
+          actionCommitSha: "a".repeat(40),
+        }),
+      ).rejects.toThrow("repository_missing_or_ambiguous");
+    }
+  });
+
   it("parses commands and exact confirmation values without interpreting them", () => {
     expect(
       parseArguments([

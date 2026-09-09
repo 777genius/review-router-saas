@@ -491,6 +491,75 @@ export class PrismaInvestigationStore
     );
   }
 
+  async adopt(
+    input: Parameters<InvestigationStorePort["adopt"]>[0],
+  ): Promise<InvestigationStoreCommitResult> {
+    try {
+      return await this.prisma.$transaction(
+        async (transaction) => {
+          await lockInvestigationExecutionScope(
+            transaction,
+            input.investigation,
+          );
+          await transaction.$queryRaw(Prisma.sql`
+          SELECT "investigationId" FROM "ReviewInvestigation"
+          WHERE "investigationId" = ${input.investigation.investigationId}
+          FOR UPDATE
+        `);
+          const restored = await restoreCommitResult(transaction, input);
+          if (restored) return restored;
+          const current = await loadAggregate(
+            transaction,
+            input.investigation.investigationId,
+          );
+          if (
+            !current ||
+            current.version !== input.expectedVersion ||
+            current.naturalIdentityHash !==
+              input.investigation.naturalIdentityHash
+          ) {
+            return result(
+              InvestigationStoreCommitStatus.ConcurrencyConflict,
+              current,
+            );
+          }
+          await lockInvestigationAuthorization(transaction, current);
+          const now = await investigationDatabaseNow(transaction);
+          const verdict = await executionAuthorityVerdict(
+            transaction,
+            current,
+            now,
+          );
+          await input.requireCurrentExecution(verdict);
+          if (verdict !== InvestigationExecutionAuthorityVerdict.Current) {
+            throw new Error(`investigation_execution_${verdict}`);
+          }
+          await transaction.reviewInvestigationCommandReceipt.create({
+            data: {
+              commandId: input.commandId,
+              commandHash: input.commandHash,
+              investigationId: current.investigationId,
+              resultingVersion: BigInt(current.version),
+              createdAt: now,
+              retainUntil: aggregateRetainUntil(
+                current,
+                this.options.operationalRetentionMs,
+              ),
+            },
+          });
+          return result(InvestigationStoreCommitStatus.Committed, current);
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      );
+    } catch (error) {
+      // Only a competing receipt insertion can be reconciled here.
+      if (!isUniqueConstraintError(error)) throw error;
+      const restored = await this.restoreCommand(input);
+      if (restored) return restored;
+      throw error;
+    }
+  }
+
   async commit(
     input: Parameters<InvestigationStorePort["commit"]>[0],
   ): Promise<InvestigationStoreCommitResult> {
@@ -510,6 +579,29 @@ export class PrismaInvestigationStore
                 privateMaterials: input.privateMaterials ?? [],
               },
             );
+            if (input.guard !== undefined) {
+              await lockInvestigationExecutionScope(
+                transaction,
+                input.investigation,
+              );
+              const lockedRestore = await restoreCommitResult(
+                transaction,
+                input,
+              );
+              if (lockedRestore !== null) return lockedRestore;
+              if (
+                !(await commitGuardIsCurrent(
+                  transaction,
+                  input,
+                  input.investigation,
+                ))
+              ) {
+                return result(
+                  InvestigationStoreCommitStatus.LeaseFenceConflict,
+                  null,
+                );
+              }
+            }
             return this.createAggregate(transaction, {
               investigation: input.investigation,
               expectedVersion: null,
@@ -2663,14 +2755,22 @@ async function commitGuardIsCurrent(
   current: ReviewInvestigation,
 ): Promise<boolean> {
   if (input.guard === undefined) return true;
+  if (
+    input.guard.kind === InvestigationStoreCommitGuardKind.ExecutionAuthority
+  ) {
+    await lockInvestigationAuthorization(transaction, current);
+  }
   const databaseNow = await investigationDatabaseNow(transaction);
   if (
     input.guard.kind === InvestigationStoreCommitGuardKind.ExecutionAuthority
   ) {
-    return (
-      (await executionAuthorityVerdict(transaction, current, databaseNow)) ===
-      input.guard.expectedVerdict
+    const verdict = await executionAuthorityVerdict(
+      transaction,
+      current,
+      databaseNow,
     );
+    await input.guard.requireCurrentExecution?.(verdict);
+    return verdict === input.guard.expectedVerdict;
   }
   if (
     input.guard.kind === InvestigationStoreCommitGuardKind.ExpiredActiveTurn
@@ -2823,6 +2923,26 @@ function resultAdmissionDeadlineIsCurrent(
     investigation.activeTurn !== null &&
     effectiveDeadline <= new Date(investigation.activeTurn.expiresAt)
   );
+}
+
+// Lock order: execution scope, investigation (when present), authorization.
+// Authorization termination/renewal take their own advisory lock then update
+// this row, but never acquire our scope/investigation locks. We deliberately
+// do not acquire their advisory lock: the row fence also covers direct updates
+// and expiry sweeps, without introducing a reverse advisory-lock dependency.
+// Take this lock BEFORE reading currency/time and hold it through the receipt.
+async function lockInvestigationAuthorization(
+  transaction: Prisma.TransactionClient,
+  investigation: ReviewInvestigation,
+): Promise<void> {
+  await transaction.$queryRaw(Prisma.sql`
+    SELECT auth_row."authorizationId"
+    FROM "ReviewRunAuthorization" AS auth_row
+    JOIN "ReviewExecutionV2" AS execution
+      ON execution."authorizationId" = auth_row."authorizationId"
+    WHERE execution."executionId" = ${investigation.executionId}
+    FOR UPDATE OF auth_row
+  `);
 }
 
 async function executionAuthorityVerdict(

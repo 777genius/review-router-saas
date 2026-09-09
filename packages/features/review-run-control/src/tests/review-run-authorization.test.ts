@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { tokenClaimsMatchAuthorization } from "../application/use-cases/token-claims-match-authorization";
+import { describe, expect, it, vi } from "vitest";
 import {
   CapabilityAudience,
   CapabilityKind,
@@ -31,6 +32,244 @@ import {
 } from "./fixtures";
 
 describe("ReviewRunAuthorization", () => {
+  it("resolves authenticated metadata, rejects row drift, and supports claims-only codecs", async () => {
+    const kit = createReviewRunControlTestKit();
+    const fixture = await provisionV2AuthorizationContext(kit);
+    const first = await kit.control.authorizations.authorizeReviewRun(
+      fixture.authorizeInput,
+    );
+    if (!("authorization" in first)) throw new Error("fixture_failed");
+    const input = { token: first.token.token, now: kit.clock.now() };
+    const verified = await kit.tokens.verifyWithMetadata(input);
+    expect(verified).toEqual({
+      ...(await kit.tokens.verify(input)),
+      authenticatedKeyId: first.token.keyId,
+      notBefore: new Date(
+        Math.floor(first.authorization.createdAt.getTime() / 1000) * 1000,
+      ),
+    });
+    expect(
+      await kit.control.authorizations.resolveVerifiedReviewRunAuthorizationToken(
+        input,
+      ),
+    ).toEqual({
+      status: ReviewRunAuthorizationTokenResolutionStatus.Valid,
+      authorization: first.authorization,
+      verifiedToken: verified,
+    });
+    expect(
+      await kit.control.authorizations.resolveReviewRunAuthorizationToken(
+        input,
+      ),
+    ).toEqual({
+      status: ReviewRunAuthorizationTokenResolutionStatus.Valid,
+      authorization: first.authorization,
+    });
+    const legacy = new ReviewRunAuthorizationSignedCapabilityAdapter(
+      {
+        sign: (claims) => kit.tokenCodec.sign(claims),
+        verify: (request) => kit.tokenCodec.verify(request),
+      },
+      kit.tokenKeyRing,
+    );
+    expect(await legacy.verify(input)).toEqual(await kit.tokens.verify(input));
+    await expect(legacy.verifyWithMetadata(input)).rejects.toThrow(
+      "verified_metadata_unavailable",
+    );
+    const drifted = await kit.tokens.issue({
+      ...first.authorization,
+      mutationEpoch: first.authorization.mutationEpoch + 1n,
+    });
+    expect(
+      await kit.control.authorizations.resolveVerifiedReviewRunAuthorizationToken(
+        { token: drifted.token },
+      ),
+    ).toEqual({
+      status: ReviewRunAuthorizationTokenResolutionStatus.ClaimDrift,
+    });
+    const pieces = first.token.token.split(".");
+    pieces[1] = Buffer.from(
+      JSON.stringify({
+        ...JSON.parse(Buffer.from(pieces[1]!, "base64url").toString()),
+        nbf: 1,
+      }),
+    ).toString("base64url");
+    expect(
+      await kit.control.authorizations.resolveVerifiedReviewRunAuthorizationToken(
+        { token: pieces.join(".") },
+      ),
+    ).toEqual({ status: ReviewRunAuthorizationTokenResolutionStatus.Invalid });
+
+    // Each signed field remains part of the exact comparison, including ordered lanes.
+    const row = first.authorization;
+    expect(
+      tokenClaimsMatchAuthorization(verified, row, verified.scopeHash),
+    ).toBe(true);
+    for (const field of [
+      "capabilityId",
+      "authorizationId",
+      "issuer",
+      "audience",
+      "scopeHash",
+      "producerReleaseId",
+      "selectedProtocolVersion",
+      "schemaDigest",
+      "protocolLimitsProfileId",
+      "operationalSloProfileId",
+      "authorizationSafetyDecisionHash",
+    ] as const) {
+      expect(
+        tokenClaimsMatchAuthorization(
+          { ...verified, [field]: "drift" },
+          row,
+          verified.scopeHash,
+        ),
+        field,
+      ).toBe(false);
+    }
+    for (const patch of [
+      { mutationEpoch: verified.mutationEpoch + 1n },
+      { providerVoteLaneIds: [] },
+      { providerVoteLaneIds: ["f".repeat(64)] },
+      { issuedAt: new Date(verified.issuedAt.getTime() + 1000) },
+      { expiresAt: new Date(verified.expiresAt.getTime() + 1000) },
+    ])
+      expect(
+        tokenClaimsMatchAuthorization(
+          { ...verified, ...patch },
+          row,
+          verified.scopeHash,
+        ),
+      ).toBe(false);
+    expect(
+      tokenClaimsMatchAuthorization(
+        {
+          ...verified,
+          issuedAt: new Date(verified.issuedAt.getTime() + 999),
+          expiresAt: new Date(verified.expiresAt.getTime() + 999),
+        },
+        row,
+        verified.scopeHash,
+      ),
+    ).toBe(true);
+    const lanes = [
+      { ...row.providerVoteLanes[0]!, providerVoteIdentityHash: hashA },
+      { ...row.providerVoteLanes[0]!, providerVoteIdentityHash: hashC },
+    ];
+    expect(
+      tokenClaimsMatchAuthorization(
+        { ...verified, providerVoteLaneIds: [hashA, hashC] },
+        { ...row, providerVoteLanes: lanes },
+        verified.scopeHash,
+      ),
+    ).toBe(true);
+    expect(
+      tokenClaimsMatchAuthorization(
+        { ...verified, providerVoteLaneIds: [hashC, hashA] },
+        { ...row, providerVoteLanes: lanes },
+        verified.scopeHash,
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps authenticated nbf distinct from iat and rejects current expiry", async () => {
+    const kit = createReviewRunControlTestKit();
+    const fixture = await provisionV2AuthorizationContext(kit);
+    const first = await kit.control.authorizations.authorizeReviewRun(
+      fixture.authorizeInput,
+    );
+    if (!("authorization" in first)) throw new Error("fixture_failed");
+    const claims = await kit.tokenCodec.verify({
+      token: first.token.token,
+      now: kit.clock.now(),
+      expectedIssuer: first.authorization.tokenIssuer,
+      expectedAudience: CapabilityAudience.ReviewRun,
+      expectedKind: CapabilityKind.RunAuthorization,
+    });
+    const notBefore = new Date(claims.issuedAt.getTime() + 1000);
+    const signed = await kit.tokenCodec.sign({ ...claims, notBefore });
+    expect(
+      await kit.control.authorizations.resolveVerifiedReviewRunAuthorizationToken(
+        { token: signed.token },
+      ),
+    ).toEqual({ status: ReviewRunAuthorizationTokenResolutionStatus.Invalid });
+    kit.clock.advance(1000);
+    expect(
+      await kit.control.authorizations.resolveVerifiedReviewRunAuthorizationToken(
+        { token: signed.token },
+      ),
+    ).toMatchObject({
+      status: ReviewRunAuthorizationTokenResolutionStatus.Valid,
+      verifiedToken: { issuedAt: claims.issuedAt, notBefore },
+    });
+    kit.clock.advance(claims.expiresAt.getTime() - kit.clock.now().getTime());
+    expect(
+      await kit.control.authorizations.resolveVerifiedReviewRunAuthorizationToken(
+        { token: signed.token },
+      ),
+    ).toEqual({ status: ReviewRunAuthorizationTokenResolutionStatus.Invalid });
+  });
+
+  it.each(["missing", "revoked", "expired"] as const)(
+    "shares the %s row rejection with public resolution",
+    async (state) => {
+      const kit = createReviewRunControlTestKit();
+      const fixture = await provisionV2AuthorizationContext(kit);
+      const first = await kit.control.authorizations.authorizeReviewRun(
+        fixture.authorizeInput,
+      );
+      if (!("authorization" in first)) throw new Error("fixture_failed");
+      vi.spyOn(kit.store, "findReviewRunAuthorizationById").mockResolvedValue(
+        state === "missing"
+          ? null
+          : {
+              ...first.authorization,
+              state:
+                state === "revoked"
+                  ? ReviewRunAuthorizationState.Revoked
+                  : ReviewRunAuthorizationState.Expired,
+            },
+      );
+      const input = { token: first.token.token };
+      expect(
+        await kit.control.authorizations.resolveVerifiedReviewRunAuthorizationToken(
+          input,
+        ),
+      ).toEqual({ status: state });
+      expect(
+        await kit.control.authorizations.resolveReviewRunAuthorizationToken(
+          input,
+        ),
+      ).toEqual({ status: state });
+    },
+  );
+
+  it("fails closed for a legacy token port while public resolution still works", async () => {
+    const kit = createReviewRunControlTestKit();
+    const fixture = await provisionV2AuthorizationContext(kit);
+    const first = await kit.control.authorizations.authorizeReviewRun(
+      fixture.authorizeInput,
+    );
+    if (!("authorization" in first)) throw new Error("fixture_failed");
+    Object.defineProperty(kit.tokens, "verifyWithMetadata", {
+      value: undefined,
+    });
+    const input = { token: first.token.token };
+    expect(
+      await kit.control.authorizations.resolveVerifiedReviewRunAuthorizationToken(
+        input,
+      ),
+    ).toEqual({ status: ReviewRunAuthorizationTokenResolutionStatus.Invalid });
+    expect(
+      await kit.control.authorizations.resolveReviewRunAuthorizationToken(
+        input,
+      ),
+    ).toEqual({
+      status: ReviewRunAuthorizationTokenResolutionStatus.Valid,
+      authorization: first.authorization,
+    });
+  });
+
   it("declares the exact signed-capability profile and decimal wire epoch", () => {
     expect(reviewRunControlContractDescriptor.authorizationCapability).toEqual({
       issuer: "reviewrouter-review-run-control",
@@ -342,6 +581,28 @@ describe("ReviewRunAuthorization", () => {
       mutationEpoch: first.authorization.mutationEpoch,
       authorizationSafetyDecisionHash:
         first.authorization.authorizationSafetyDecisionHash,
+    });
+    // An old token is still cryptographically current, but no longer matches the renewed row.
+    await expect(
+      kit.tokens.verifyWithMetadata({
+        token: first.token.token,
+        now: kit.clock.now(),
+      }),
+    ).resolves.toHaveProperty("authenticatedKeyId");
+    expect(
+      await kit.control.authorizations.resolveVerifiedReviewRunAuthorizationToken(
+        { token: first.token.token },
+      ),
+    ).toEqual({
+      status: ReviewRunAuthorizationTokenResolutionStatus.ClaimDrift,
+    });
+    expect(
+      await kit.control.authorizations.resolveVerifiedReviewRunAuthorizationToken(
+        { token: renewed.token.token },
+      ),
+    ).toMatchObject({
+      status: ReviewRunAuthorizationTokenResolutionStatus.Valid,
+      verifiedToken: { authenticatedKeyId: renewed.token.keyId },
     });
     const renewalRetry =
       await kit.control.authorizations.renewReviewRunAuthorization({

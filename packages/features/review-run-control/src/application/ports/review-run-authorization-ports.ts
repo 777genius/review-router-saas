@@ -22,6 +22,8 @@ export type ReviewRunAuthorizationAdmissionFence = {
   readonly repositoryIdentityVersion: number;
   readonly mutationAuthorityVersion: number;
   readonly producerRelease: ProducerRelease;
+  /** Transient prerequisite for repository-selected variants; never persisted. */
+  readonly expectedBaseProducerRelease?: ProducerRelease;
   readonly protocolLimitsDigest: string;
   readonly operationalSloDigest: string;
   readonly safetySnapshot: ReviewSafetyPolicySnapshot;

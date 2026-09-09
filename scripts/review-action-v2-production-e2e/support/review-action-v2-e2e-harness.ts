@@ -136,6 +136,7 @@ export type ReviewActionV2E2EFlow = Readonly<{
 }>;
 
 export type ReviewActionV2E2EAuthorization = Readonly<{
+  sourceRunAttempt?: string;
   authorizationId: string;
   authorizationToken: string;
   reviewRevisionHash: string;
@@ -151,6 +152,9 @@ export type ReviewActionV2E2EInvestigationProfile = Readonly<{
 export type ReviewActionV2E2EHarnessOptions = Readonly<{
   investigationProfile?: ReviewActionV2E2EInvestigationProfile;
   environmentOverrides?: Readonly<Record<string, string>>;
+  investigationEmergencyValue?: () => string;
+  investigationProductionEffects?: boolean;
+  beforeFakeGitHubRead?: (request: Request) => Promise<void>;
   protocolMaxAttemptsPerSlot?: number;
 }>;
 
@@ -235,8 +239,14 @@ export class ReviewActionV2E2EHarness {
       revision: { baseSha, mergeBaseSha, headSha },
     });
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = fakeGitHub.fetch;
-    const env = Object.freeze({
+    globalThis.fetch = async (input, init) => {
+      const request =
+        input instanceof Request ? input : new Request(input.toString(), init);
+      if (request.method === "GET")
+        await options.beforeFakeGitHubRead?.(request);
+      return fakeGitHub.fetch(input, init);
+    };
+    const env: Readonly<Record<string, string>> = Object.freeze({
       ...productionEnv({
         appPrivateKey: appKeys.privateKey
           .export({ type: "pkcs8", format: "pem" })
@@ -248,7 +258,38 @@ export class ReviewActionV2E2EHarness {
           ? { investigationProfile: options.investigationProfile }
           : {}),
       }),
+      ...(options.investigationProductionEffects
+        ? {
+            REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED: "1",
+            REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED: "1",
+            REVIEW_ROUTER_REVIEW_INVESTIGATION_SELECTORS_JSON: JSON.stringify(
+              Object.fromEntries(
+                ["production_effects", "verified_clean"].map((capability) => [
+                  capability,
+                  [
+                    {
+                      workspaceIds: [workspaceId],
+                      repositoryConnectionIds: [repositoryConnectionId],
+                      providers: ["codex"],
+                      trustDomains: ["trusted_managed"],
+                      producerReleaseIds: [producerReleaseId],
+                    },
+                  ],
+                ]),
+              ),
+            ),
+          }
+        : {}),
       ...(options.environmentOverrides ?? {}),
+      // Keep the object frozen while letting both compositions reread fixture state.
+      get REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED() {
+        return (
+          options.investigationEmergencyValue?.() ??
+          options.environmentOverrides
+            ?.REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED ??
+          "0"
+        );
+      },
     });
 
     try {
@@ -316,10 +357,13 @@ export class ReviewActionV2E2EHarness {
     await this.prisma.$disconnect();
   }
 
-  async authorize(): Promise<ReviewActionV2E2EAuthorization> {
-    const oidcToken = await this.signOidcToken();
+  async authorize(
+    input: { readonly sourceRunAttempt?: string } = {},
+  ): Promise<ReviewActionV2E2EAuthorization> {
+    const runAttempt = input.sourceRunAttempt ?? "1";
+    const oidcToken = await this.signOidcToken(runAttempt);
     const request: ReviewRunAuthorizeRequest = {
-      ...envelope(`${this.prefix}-authorize`),
+      ...envelope(`${this.prefix}-authorize-${runAttempt}`),
       oidcToken,
       supportedProtocols: [
         {
@@ -342,6 +386,7 @@ export class ReviewActionV2E2EHarness {
       ),
     );
     return {
+      sourceRunAttempt: runAttempt,
       authorizationId,
       authorizationToken,
       reviewRevisionHash: requiredString(facts.reviewRevisionHash),
@@ -427,7 +472,7 @@ export class ReviewActionV2E2EHarness {
         assignmentManifestHash,
         workSlotsCanonicalJson: canonicalJson(workSlots),
         sourceRunId,
-        sourceRunAttempt: "1",
+        sourceRunAttempt: authorized.sourceRunAttempt ?? "1",
       },
     );
     const started = await requiredHandler(
@@ -758,22 +803,50 @@ export class ReviewActionV2E2EHarness {
 
   async finalize(
     flow: ReviewActionV2E2EFlow,
-    options: { readonly allowPartial?: boolean } = {},
+    options: {
+      readonly allowPartial?: boolean;
+      readonly investigation?: {
+        readonly observationId: string;
+        readonly findings: ReviewObservationPayload["normalizedFindings"];
+      };
+    } = {},
   ) {
     const allowPartial = options.allowPartial ?? false;
+    const findings = options.investigation?.findings ?? [];
+    const hasFindings = findings.length > 0;
     const lifecycleStateHash = sha256(`${flow.executionId}-lifecycle`);
     const commandLedgerWatermark = "0";
     const projection = {
+      ...(options.investigation
+        ? {
+            authoritativeObservationIds: [options.investigation.observationId],
+          }
+        : {}),
       commandLedgerWatermark,
       coverage: { state: allowPartial ? "partial" : "complete" },
       envelopeVersion: "review_projection.v1",
       lifecycleStateHash,
-      mergeGate: { conclusion: allowPartial ? "neutral" : "success" },
-      occurrences: [],
+      mergeGate: {
+        conclusion: hasFindings
+          ? "failure"
+          : allowPartial
+            ? "neutral"
+            : "success",
+      },
+      occurrences: findings.map((finding) => ({
+        lineageId: finding.normalizedFailureModeHash,
+        state: "new",
+        observationIds: [options.investigation!.observationId],
+        providerVoteKeys: [providerVoteIdentityHash],
+        placement: { kind: "summary" },
+        title: finding.title,
+        message: finding.message,
+        evidence: finding.evidence,
+      })),
       projectionPolicyVersion: reviewActionV2ProjectionPolicyVersion,
       publishing: {
         check: {
-          conclusion: "success",
+          conclusion: hasFindings ? "failure" : "success",
           marker: `<!-- ${flow.executionId}:check -->`,
           name: "ReviewRouter",
           summary: "Review complete",
@@ -782,11 +855,15 @@ export class ReviewActionV2E2EHarness {
         inlineReviewChunks: [],
         lifecycle: [],
         summary: {
-          allClear: !allowPartial,
-          body: allowPartial ? "Partial review" : "Review complete",
+          allClear: !allowPartial && !hasFindings,
+          body: hasFindings
+            ? `Investigation Findings\n${findings.map((finding) => `${finding.title}: ${finding.message}`).join("\n")}`
+            : allowPartial
+              ? "Partial review"
+              : "Review complete",
           marker: `<!-- ${flow.executionId}:summary -->`,
           occurrenceCounts: {
-            new: 0,
+            new: findings.length,
             reconfirmed: 0,
             changed: 0,
             carried_unverified: 0,
@@ -1299,7 +1376,7 @@ export class ReviewActionV2E2EHarness {
     });
   }
 
-  private async signOidcToken(): Promise<string> {
+  private async signOidcToken(runAttempt: string): Promise<string> {
     this.oidcOrdinal += 1;
     const keyPair = oidcSigningKeys.get(this.fakeGitHub.options.oidcKeyId);
     if (!keyPair) throw new Error("review_v2_e2e_oidc_signing_key_missing");
@@ -1311,7 +1388,7 @@ export class ReviewActionV2E2EHarness {
       event_name: "pull_request",
       ref: `refs/pull/${pullRequestNumber}/merge`,
       run_id: sourceRunId,
-      run_attempt: "1",
+      run_attempt: runAttempt,
       workflow_ref: `${owner}/${repo}/.github/workflows/reviewrouter.yml@refs/pull/${pullRequestNumber}/merge`,
       workflow_sha: this.fakeGitHub.revision.headSha,
       job_workflow_ref: `777genius/review-router/.github/workflows/reviewrouter-execution-reusable.yml@${actionCommitSha}`,

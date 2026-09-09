@@ -302,6 +302,9 @@ const preReleaseMigrationBoundary = Object.freeze({
     "000090_workflow_provisioning_attempt_authority",
     "000091_workflow_provisioning_artifact_and_inventory",
     "000096_hosted_pool_public_repository_eligibility",
+    // Checkout-only additions do not enter the immutable historical rehearsal.
+    "000098_certified_fork_effect_archive",
+    "000099_certified_fork_proof_facts",
   ]),
   retained: Object.freeze([
     "000067_review_live_progress",

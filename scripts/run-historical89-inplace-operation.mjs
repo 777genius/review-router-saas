@@ -1,27 +1,20 @@
 #!/usr/bin/env node
-// Executable runner for the reviewed managed-historical89-in-place/v1
-// operation. This is the exact call sequence proved by the "reaches96 under
-// custody and records one protected operation-bound receipt" test in
-// scripts/render-historical89-custody.pg17.real.test.ts, rebuilt as a script
-// against a real `pg` connection instead of the disposable psql fixture. It
-// invents no domain logic of its own: every accept/reject decision is made by
-// the already-reviewed library functions under scripts/lib/. This file only
-// adds connection handling, ordering glue and JSON reporting.
+// Historical89 startup classification and authenticated already96 verification.
+// Already96 requires an independently pinned durable request and reads current
+// evidence through a shared read-only snapshot.
 //
-// Like the library it calls, this script never claims production
-// authorization: `plan.authorization.authorizesProductionMutation` is false
-// today because no independently reviewed expectation registry exists yet
-// (see render-historical89-admission.mjs). Running it still performs the real
-// schema mutation when pointed at a qualified database - it is the mechanism,
-// not the approval.
-//
-// Scope: this mirrors the "reaches96" test only. It does not withdraw and
-// then restore the CONNECT ACL as a separate later step, and it does not
-// implement cross-invocation resume (recovering a lost operationId from a
-// prior process) - both are explicitly out of this test's sequence and are
-// left to the coordinator, matching PLAN.md section 1C/2.
+// Baseline89 execution is unsupported: no independently reviewed authorization
+// registry exists, and disposable rehearsal does not authorize production
+// mutation. Reject before qualification, which itself creates custody and
+// restricts admission. The mutation sequence below is unreachable until a
+// separately reviewed authorization implementation replaces this denial.
 import pg from "pg";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import {
+  parseHistorical89Verification,
+  verifyHistorical89Already96,
+} from "./lib/verify-historical89-already96.mjs";
 import {
   renderManagedEvidenceDigest,
   renderManagedLedgerSql,
@@ -42,7 +35,10 @@ import {
   inspectHistorical89InPlaceLedger,
   renderHistorical89InPlaceTransaction,
 } from "./lib/render-historical89-inplace-transaction.mjs";
-import { renderManagedOperationCustodyBootstrap } from "./lib/render-managed-operation-custody.mjs";
+import {
+  renderManagedOperationCurrentPermitSql,
+  renderManagedOperationCustodyBootstrap,
+} from "./lib/render-managed-operation-custody.mjs";
 import {
   renderHistorical89AdmissionRestrictionSql,
   renderHistorical89ConnectAclSql,
@@ -317,11 +313,16 @@ async function reconcileAfter(mainUrl, readerUrl, plan, opts) {
   let terminalLedger;
   let gateNow;
   let membershipNow;
+  let currentPermit;
   try {
     terminalLedger = await readOne(post, renderManagedLedgerSql);
     terminalCatalog = await readOne(post, renderManagedCatalogSql);
     gateNow = await readOne(post, gateSql);
     membershipNow = await readOne(post, renderManagedMembershipSql);
+    currentPermit = await readOne(
+      post,
+      renderManagedOperationCurrentPermitSql(plan.binding),
+    );
   } finally {
     await post.end().catch(() => {});
   }
@@ -329,7 +330,8 @@ async function reconcileAfter(mainUrl, readerUrl, plan, opts) {
   try {
     receipt = await readReceipt(readerUrl, plan.effectReadSql);
   } catch {
-    receipt = null;
+    // A failed read is unknown evidence, not proof that no receipt exists.
+    receipt = undefined;
   }
   const inspected = inspectHistorical89InPlaceLedger(terminalLedger);
   const rollbackConfirmed = inspected.count === phase.baselineCount;
@@ -361,6 +363,7 @@ async function reconcileAfter(mainUrl, readerUrl, plan, opts) {
     originalMembership: opts.originalMembership,
     aclDelta,
     receipt,
+    currentPermit,
     fenceHeld: true,
   });
   return { reconciliation, receipt };
@@ -375,27 +378,38 @@ async function run() {
     const currentLedger = await readOne(client, renderManagedLedgerSql);
     const currentInspect = inspectHistorical89InPlaceLedger(currentLedger);
     if (currentInspect.count === phase.targetCount) {
-      // Idempotent: already at 96. Best-effort receipt lookup only; a 96
-      // reached by any path other than this custody mechanism has no receipt
-      // to find, and that is reported as null rather than treated as failure.
-      let receiptDigest = null;
+      // A prior invocation's identity and expectations cannot be recovered
+      // from LIMIT 1 or inferred from a receipt. Require the durable request.
+      let reader;
       try {
-        const effectReadSql = `SELECT release_operation_custody.custody_read_effect(
-          (SELECT operation_id FROM release_operation_custody.operation_permit LIMIT 1)
-        )::jsonb;`;
-        const receipt = await readReceipt(readerUrl, effectReadSql);
-        receiptDigest = receipt?.effectFingerprint ?? null;
+        const request = parseHistorical89Verification(
+          readFileSync(
+            requireEnv("REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH"),
+          ),
+          requireEnv("REVIEW_ROUTER_HISTORICAL89_OPERATION_ID"),
+          requireEnv("REVIEW_ROUTER_HISTORICAL89_VERIFICATION_SHA256"),
+        );
+        reader = await connect(readerUrl);
+        return await verifyHistorical89Already96(client, reader, request);
       } catch {
-        receiptDigest = null;
+        return {
+          outcome: "fenced-unresolved",
+          receiptDigest: null,
+          timestamp: new Date().toISOString(),
+          // Do not report connection strings or untrusted evidence values.
+          reason: "already96_verification_failed",
+        };
+      } finally {
+        if (reader) await reader.end().catch(() => {});
       }
-      return {
-        outcome: "already-96",
-        receiptDigest,
-        timestamp: new Date().toISOString(),
-      };
     }
     if (currentInspect.count !== phase.baselineCount)
       fail(`unexpected_ledger_state:count=${currentInspect.count}`);
+
+    // Qualification bootstraps custody and changes admission; even rehearsing
+    // here would mutate the target before authorization. No approved registry
+    // exists, so neither qualification nor the later plan may run.
+    fail("production_mutation_not_authorized");
 
     let qualification;
     try {

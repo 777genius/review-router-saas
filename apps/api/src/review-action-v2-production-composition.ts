@@ -1,3 +1,7 @@
+import {
+  createRepositoryReleaseSelector,
+  repositoryReleaseBindingsEnv,
+} from "./review-action-v2-repository-release-selection";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import { App } from "@octokit/app";
@@ -483,6 +487,10 @@ export function composeReviewActionV2ProductionRoutes(input: {
       record: (code) => input.recordInvestigationOperationsDiagnostic?.(code),
     };
   const runControlHandlers = {
+    repositoryReleaseSelector: createRepositoryReleaseSelector(
+      input.env[repositoryReleaseBindingsEnv],
+      repositories.producerReleases,
+    ),
     oidcVerifier: new JoseGitHubActionsOidcTokenVerifier(),
     oidcAudience,
     actionRepositories,

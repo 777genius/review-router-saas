@@ -1,9 +1,18 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { isLoopbackHostname } from "../packages/shared/src/validation/loopback-hostname.mjs";
-import { loadEnvFile } from "./lib/env-file.mjs";
+import { certifiedForkRoute } from "./lib/certified-fork-e2e-evidence.mjs";
 
+const certifiedRoute = certifiedForkRoute(process.argv.slice(2));
+if (certifiedRoute) {
+  console.log(JSON.stringify(certifiedRoute.evidence));
+  process.exit(certifiedRoute.exitCode);
+}
+
+// Load ordinary runtime dependencies only after the isolated offline gate.
+const { spawnSync } = await import("node:child_process");
+const { existsSync } = await import("node:fs");
+const { isLoopbackHostname } =
+  await import("../packages/shared/src/validation/loopback-hostname.mjs");
+const { loadEnvFile } = await import("./lib/env-file.mjs");
 const args = new Set(process.argv.slice(2));
 const checkOnly = args.has("--check-only");
 const env = loadRuntimeEnv();

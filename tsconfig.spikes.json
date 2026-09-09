@@ -17,6 +17,9 @@
       "@reviewrouter/shared": ["./packages/shared/src/index.ts"]
     }
   },
-  "include": ["spikes/**/*.ts"],
+  "include": [
+    "spikes/**/*.ts",
+    "scripts/review-investigation-authority.pg.real.test.ts"
+  ],
   "exclude": ["node_modules", "dist", ".next"]
 }

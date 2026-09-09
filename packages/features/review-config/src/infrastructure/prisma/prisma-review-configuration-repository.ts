@@ -1,3 +1,4 @@
+import { acquireCurrentScopeGuards } from "@reviewrouter/platform-db";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   parseReviewConfiguration,
@@ -55,8 +56,22 @@ export class PrismaReviewConfigurationRepository implements ReviewConfigurationR
   }
 
   async deleteTarget(target: ReviewConfigurationTarget): Promise<boolean> {
-    return deleteReviewConfigurationTarget(this.prisma, target);
+    return this.prisma.$transaction((tx) =>
+      deleteReviewConfigurationTarget(tx, target),
+    );
   }
+}
+
+/** Acquire at transaction entry, before any earlier advisory/row locks or reads.
+ * Multi-target callers predeclare their complete scope plan with the DB helper.
+ */
+export async function acquireReviewConfigurationWriteScope(
+  transaction: Prisma.TransactionClient,
+  target: ReviewConfigurationTarget,
+): Promise<void> {
+  await acquireCurrentScopeGuards(transaction, [
+    { ...target, mode: "exclusive" },
+  ]);
 }
 
 export class PrismaReviewConfigurationTransactionRepository implements ReviewConfigurationRepositoryPort {
@@ -129,9 +144,10 @@ async function findLatestReviewConfiguration(
 }
 
 async function saveNextReviewConfigurationVersion(
-  prisma: ReviewConfigurationPrismaClient,
+  prisma: Prisma.TransactionClient,
   input: Parameters<ReviewConfigurationRepositoryPort["saveNextVersion"]>[0],
 ): Promise<PersistedReviewConfiguration> {
+  await acquireReviewConfigurationWriteScope(prisma, input.target);
   const config = parseReviewConfiguration(input.config);
   const targetKey = reviewConfigurationTargetKey(input.target);
   const configuration = await prisma.reviewConfiguration.upsert({
@@ -215,9 +231,10 @@ async function saveNextReviewConfigurationVersion(
 }
 
 async function deleteReviewConfigurationTarget(
-  prisma: ReviewConfigurationPrismaClient,
+  prisma: Prisma.TransactionClient,
   target: ReviewConfigurationTarget,
 ): Promise<boolean> {
+  await acquireReviewConfigurationWriteScope(prisma, target);
   const result = await prisma.reviewConfiguration.deleteMany({
     where: {
       workspaceId: target.workspaceId,

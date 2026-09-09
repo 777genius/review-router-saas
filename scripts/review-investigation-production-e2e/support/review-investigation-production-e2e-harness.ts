@@ -1,8 +1,24 @@
+import {
+  EnvironmentInvestigationRolloutPolicyQuery,
+  RunControlInvestigationEmergencyStopQuery,
+} from "../../../packages/features/review-investigation-operations/src/composition/index.js";
+import { ReviewInvestigationRolloutGuard } from "../../../apps/api/src/review-investigation-rollout-guard.js";
+import {
+  reviewActionV2ContextReplayKeysEnv,
+  reviewActionV2ContextSessionSecretEnv,
+} from "../../../apps/api/src/review-action-v2-context-attestation-composition.js";
+import {
+  OwnedControlPlane,
+  type Boot,
+  type FixtureConfig,
+} from "./investigation-control-plane-process.fixture.js";
+import { isDeepStrictEqual } from "node:util";
 import { Buffer } from "node:buffer";
 import {
   createHash,
   generateKeyPairSync,
   randomUUID,
+  randomBytes,
   sign,
   type KeyObject,
 } from "node:crypto";
@@ -24,6 +40,11 @@ import {
 } from "../../../packages/features/review-context-attestation/src/index.js";
 import { PrismaContextAttestationStore } from "../../../packages/features/review-context-attestation/src/composition/index.js";
 import {
+  ProviderResultCompletionStatus,
+  ReviewObservationQualityFlag,
+  prepareReviewObservationPayload,
+  reviewReuseEligibilityPolicyVersion,
+  type ReviewObservationPayload,
   InvestigationCertificateConclusion,
   InvestigationCertificateVerificationStatus,
   ProviderExecutionProfile,
@@ -63,6 +84,7 @@ import {
   PrismaInvestigationStore,
 } from "../../../packages/features/review-investigations/src/composition/index.js";
 import {
+  ResolveInvestigationRollout,
   InvestigationEvaluationAttestationVersion,
   InvestigationEvaluationSignatureAlgorithm,
   InvestigationLegacyComparison,
@@ -105,6 +127,8 @@ import {
 } from "../../../packages/protocol-review-action-v2/src/index.js";
 import {
   composeReviewActionV2ProductionRoutes,
+  reviewActionV2CapabilityKeysEnv,
+  reviewInvestigationLeaseCapabilityKeysEnv,
   reviewInvestigationPrivateMaterialActiveKeyIdEnv,
   reviewInvestigationPrivateMaterialKeysEnv,
   reviewInvestigationPrivateMaterialTtlEnv,
@@ -224,22 +248,133 @@ export type CompletedInvestigationFlow = Readonly<{
 }>;
 
 type InvestigationFlowInput = Readonly<{
+  attachSetup?: boolean;
+  boundary?: (
+    stage:
+      | "admission"
+      | "planning"
+      | "active"
+      | "committed"
+      | "conclusion"
+      | "terminal",
+    operation: () => Promise<unknown>,
+    investigationId?: string,
+  ) => Promise<void>;
   label: string;
   expandRelations: boolean;
   terminalSource:
     | InvestigationTelemetrySource.Shadow
     | InvestigationTelemetrySource.DisposableFixture;
+  checkpoint?: (input: {
+    request: ReviewInvestigationTurnCommitRequest;
+    read: InvestigationRead;
+  }) => Promise<void>;
   restartAfterFirstCommit?: boolean;
   restartAfterFindingCommit?: boolean;
 }>;
 
+export type ReviewInvestigationProductionE2EHarnessOptions = Readonly<{
+  // Shadow recording remains the default; effect boundary cases opt in.
+  investigationProductionEffects?: boolean;
+}>;
+
 export class ReviewInvestigationProductionE2EHarness {
+  readonly emergency: {
+    disabled: boolean;
+    reads: number;
+    beforeRead?: (request: Request) => Promise<void>;
+  };
+  private readonly completed = new Map<
+    string,
+    {
+      execution: InvestigationExecution;
+      concludeRequest: ReviewInvestigationConcludeRequest;
+    }
+  >();
   readonly base: ReviewActionV2E2EHarness;
   readonly databaseUrl: string;
   readonly policyHash: string;
   readonly coverageProfileHash: string;
   readonly promotionTrustProfile: InvestigationPromotionTrustProfile;
   readonly promotionProfile: InvestigationPromotionProfileIdentity;
+  private processReplaced = false;
+  private processConfig: FixtureConfig | null = null;
+  private ownedChild: OwnedControlPlane | null = null;
+  get controlPlane(): OwnedControlPlane {
+    return requiredValue(this.ownedChild, "item11_child_missing");
+  }
+  async startControlPlaneProcess(runId: string): Promise<Boot> {
+    ensure(!this.ownedChild, "item11_already_started");
+    const { owner, repo, installationId, pullRequestNumber } =
+      this.base.fakeGitHub.options;
+    this.processConfig = {
+      runId,
+      databaseUrl: this.databaseUrl,
+      env: this.base.env,
+      revisionFixture: {
+        owner,
+        repo,
+        installationId,
+        pullRequestNumber,
+        revision: { ...this.base.fakeGitHub.revision },
+      },
+    };
+    this.ownedChild = new OwnedControlPlane(runId);
+    const boot = await this.ownedChild.start(this.processConfig);
+    this.routes = {
+      ...this.routes,
+      investigation: {
+        ...this.routes.investigation,
+        openV2: {
+          capabilityEnabled: true,
+          execute: (request) => this.controlPlane.invoke("open", request),
+        },
+        planTurn: {
+          capabilityEnabled: true,
+          execute: (request) => this.controlPlane.invoke("plan", request),
+        },
+        commitTurn: {
+          capabilityEnabled: true,
+          execute: (request) => this.controlPlane.invoke("commit", request),
+        },
+        conclude: {
+          capabilityEnabled: true,
+          execute: (request) => this.controlPlane.invoke("conclude", request),
+        },
+        acquireLease: {
+          capabilityEnabled: true,
+          execute: (request) => this.controlPlane.invoke("acquire", request),
+        },
+        releaseLease: {
+          capabilityEnabled: true,
+          execute: (request) => this.controlPlane.invoke("release", request),
+        },
+      },
+      execution: {
+        ...this.routes.execution,
+        acquireLease: {
+          capabilityEnabled: true,
+          execute: (request) =>
+            this.controlPlane.invoke("executionAcquire", request),
+        },
+        releaseLease: {
+          capabilityEnabled: true,
+          execute: (request) =>
+            this.controlPlane.invoke("executionRelease", request),
+        },
+      },
+    };
+    return boot;
+  }
+  async replaceControlPlaneProcess(): Promise<Boot> {
+    const config = requiredValue(this.processConfig, "item11_config_missing");
+    ensure(!this.processReplaced, "item11_two_launch_limit");
+    await this.controlPlane.killAtCheckpoint();
+    this.processReplaced = true;
+    // Assignment is deliberately after confirmed close; failed cleanup retains A.
+    this.ownedChild = new OwnedControlPlane(config.runId);
+    return this.ownedChild.start(config);
+  }
   private prisma: PrismaClient;
   private routes: ReviewActionV2ProductionRoutes;
   private restartedPrisma: PrismaClient | null = null;
@@ -256,7 +391,9 @@ export class ReviewInvestigationProductionE2EHarness {
     promotionTrustProfile: InvestigationPromotionTrustProfile;
     evaluatorPrivateKey: KeyObject;
     evaluationPublicKeysJson: string;
+    emergency: ReviewInvestigationProductionE2EHarness["emergency"];
   }) {
+    this.emergency = input.emergency;
     this.databaseUrl = input.databaseUrl;
     this.base = input.base;
     this.prisma = input.base.prisma;
@@ -274,12 +411,24 @@ export class ReviewInvestigationProductionE2EHarness {
 
   static async create(
     databaseUrl: string,
+    options: ReviewInvestigationProductionE2EHarnessOptions = {},
   ): Promise<ReviewInvestigationProductionE2EHarness> {
     const policyHash = sha256(canonicalJson(productionInvestigationPolicy));
     const coverageProfileHash = sha256(
       canonicalJson(reviewInvestigationCoverageProfileV10),
     );
+    const emergency: ReviewInvestigationProductionE2EHarness["emergency"] = {
+      disabled: false,
+      reads: 0,
+    };
     const base = await createReviewActionV2E2EHarness(databaseUrl, {
+      investigationProductionEffects:
+        options.investigationProductionEffects === true,
+      beforeFakeGitHubRead: async (request) => emergency.beforeRead?.(request),
+      investigationEmergencyValue: () => {
+        emergency.reads += 1;
+        return emergency.disabled ? "1" : "0";
+      },
       investigationProfile: {
         coverageProfileHash,
         policyHash,
@@ -287,10 +436,25 @@ export class ReviewInvestigationProductionE2EHarness {
       },
       protocolMaxAttemptsPerSlot: providerAttemptBudget,
       environmentOverrides: {
+        [reviewActionV2ContextSessionSecretEnv]:
+          randomBytes(32).toString("base64"),
+        [reviewActionV2ContextReplayKeysEnv]: JSON.stringify([
+          {
+            keyId: "review-v2-e2e-context-key",
+            secretBase64: randomBytes(32).toString("base64"),
+          },
+        ]),
+        REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON:
+          ephemeralSigningKeys("review-v2-e2e-key"),
+        [reviewActionV2CapabilityKeysEnv]:
+          ephemeralSigningKeys("review-v2-e2e-key"),
+        [reviewInvestigationLeaseCapabilityKeysEnv]: ephemeralSigningKeys(
+          "review-v2-e2e-investigation-lease-key",
+        ),
         [reviewInvestigationPrivateMaterialActiveKeyIdEnv]:
           privateMaterialKeyId,
         [reviewInvestigationPrivateMaterialKeysEnv]: JSON.stringify({
-          [privateMaterialKeyId]: Buffer.alloc(32, 11).toString("base64url"),
+          [privateMaterialKeyId]: randomBytes(32).toString("base64url"),
         }),
         [reviewInvestigationPrivateMaterialTtlEnv]: "3600000",
       },
@@ -318,6 +482,7 @@ export class ReviewInvestigationProductionE2EHarness {
         }),
       });
     return new ReviewInvestigationProductionE2EHarness({
+      emergency,
       databaseUrl,
       base,
       policyHash,
@@ -342,11 +507,13 @@ export class ReviewInvestigationProductionE2EHarness {
   }
 
   async close(): Promise<void> {
+    await this.ownedChild?.close();
     await this.restartedPrisma?.$disconnect();
     await this.base.close();
   }
 
   async restartControlPlane(): Promise<void> {
+    ensure(!this.ownedChild, "item11_in_process_restart_forbidden");
     await this.restartedPrisma?.$disconnect();
     this.restartedPrisma = createPrismaClient({
       databaseUrl: this.databaseUrl,
@@ -371,13 +538,16 @@ export class ReviewInvestigationProductionE2EHarness {
   private async runTerminal(
     input: InvestigationFlowInput & Readonly<{ includeFinding: boolean }>,
   ): Promise<CompletedInvestigationFlow> {
-    const execution = await this.createExecution();
+    const execution = await this.createExecution(input.attachSetup ?? false);
     const { opened: open, duplicateOpenVersion } = await (async () => {
       const lease = await this.acquireTurnLease(
         execution,
         `${input.label}-open`,
       );
       try {
+        await input.boundary?.("admission", () =>
+          this.openInvestigation(execution, input.label),
+        );
         const opened = await this.openInvestigation(execution, input.label);
         const duplicateOpen = await requiredHandler(
           this.routes.investigation.openV2,
@@ -413,10 +583,25 @@ export class ReviewInvestigationProductionE2EHarness {
     let restartedAfterFindingCommit = false;
     while (current.nextAction === ReviewInvestigationNextAction.RunTurn) {
       discoveryOrdinal += 1;
+      await input.boundary?.(
+        "planning",
+        () => this.planTurn(execution, current, `${input.label}-blocked-plan`),
+        current.investigationId,
+      );
       const plan = await this.planTurn(
         execution,
         current,
         `${input.label}-discovery-${discoveryOrdinal}`,
+        // Keep real search obligations unfinished at the finding checkpoint.
+        input.checkpoint && !restartedAfterFindingCommit ? 1 : 16,
+      );
+      await input.boundary?.(
+        "active",
+        () =>
+          requiredHandler(this.routes.investigation.planTurn).execute(
+            plan.request,
+          ),
+        plan.read.investigationId,
       );
       const lease = await this.acquireInvestigationTurnLease(
         execution,
@@ -459,16 +644,35 @@ export class ReviewInvestigationProductionE2EHarness {
         lease,
         `${input.label}-discovery-${discoveryOrdinal}`,
       );
+      // Discovery can commit without a finding. Exercise immutable Findings
+      // restoration against the actual finding-bearing commit and its request.
+      if (commit.findingCount > 0) {
+        await input.boundary?.(
+          "committed",
+          () =>
+            requiredHandler(this.routes.investigation.commitTurn).execute(
+              commit.request,
+            ),
+          commit.read.investigationId,
+        );
+      }
       current = commit.read;
       if (discoveryOrdinal === 1 && input.restartAfterFirstCommit) {
         await this.restartControlPlane();
       }
       if (
         commit.findingCount > 0 &&
-        input.restartAfterFindingCommit &&
+        (input.restartAfterFindingCommit || input.checkpoint) &&
         !restartedAfterFindingCommit
       ) {
-        await this.restartControlPlane();
+        if (input.checkpoint) {
+          await input.checkpoint({
+            request: commit.request,
+            read: commit.read,
+          });
+        } else {
+          await this.restartControlPlane();
+        }
         restartedAfterFindingCommit = true;
       }
     }
@@ -477,7 +681,8 @@ export class ReviewInvestigationProductionE2EHarness {
       "investigation_finding_fixture_not_committed",
     );
     ensure(
-      !input.restartAfterFindingCommit || restartedAfterFindingCommit,
+      !(input.restartAfterFindingCommit || input.checkpoint) ||
+        restartedAfterFindingCommit,
       "investigation_finding_restart_not_exercised",
     );
     if (current.nextAction === ReviewInvestigationNextAction.RunCritic) {
@@ -523,11 +728,31 @@ export class ReviewInvestigationProductionE2EHarness {
         disposableFixtureTerminalSamples(this.prisma),
       );
     }
+    await input.boundary?.(
+      "conclusion",
+      () => this.conclude(execution, current, `${input.label}-conclude`),
+      current.investigationId,
+    );
     const concluded = await this.conclude(
       execution,
       current,
       `${input.label}-conclude`,
     );
+    this.completed.set(concluded.read.investigationId, {
+      execution,
+      concludeRequest: concluded.request,
+    });
+    await input.boundary?.(
+      "terminal",
+      () =>
+        requiredHandler(this.routes.investigation.conclude).execute(
+          concluded.request,
+        ),
+      concluded.read.investigationId,
+    );
+    const terminalBeforeReplay = this.ownedChild
+      ? await this.controlPlane.snapshot(concluded.read.investigationId)
+      : null;
     const concludeReplay = await requiredHandler(
       this.routes.investigation.conclude,
     ).execute(concluded.request);
@@ -536,7 +761,20 @@ export class ReviewInvestigationProductionE2EHarness {
         concluded.read.investigationVersion,
       "duplicate_conclude_not_idempotent",
     );
-    this.routes = this.composeRoutes(this.prisma);
+    if (terminalBeforeReplay) {
+      ensure(
+        isDeepStrictEqual(
+          terminalBeforeReplay,
+          await this.controlPlane.snapshot(concluded.read.investigationId),
+        ),
+        "item11_conclude_replay_mutated",
+      );
+    }
+    if (
+      input.terminalSource === InvestigationTelemetrySource.DisposableFixture
+    ) {
+      this.routes = this.composeRoutes(this.prisma);
+    }
 
     const expansionObligationCount =
       await this.prisma.reviewInvestigationObligation.count({
@@ -589,7 +827,34 @@ export class ReviewInvestigationProductionE2EHarness {
     const verifier = new ReviewInvestigationCertificateVerificationAdapter(
       store,
       new NodeSha256InvestigationDigest(),
-      { async assertAllowed() {} },
+      new ReviewInvestigationRolloutGuard(
+        new ResolveInvestigationRollout(
+          new EnvironmentInvestigationRolloutPolicyQuery(this.base.env),
+          new RunControlInvestigationEmergencyStopQuery({
+            findApplicable: async () =>
+              (
+                await this.prisma.reviewSafetyEmergencyControl.findMany({
+                  where: {
+                    OR: [
+                      { policyScope: "global" },
+                      {
+                        workspaceId: this.base.workspaceId,
+                        repositoryConnectionId: null,
+                      },
+                      {
+                        repositoryConnectionId:
+                          this.base.repositoryConnectionId,
+                      },
+                    ],
+                  },
+                })
+              ).map((control) => ({
+                global: control.policyScope === "global",
+                stopped: control.stopped,
+              })),
+          }),
+        ),
+      ),
     );
     const decision = await verifier.verifyAcceptedCertificate({
       certificateId: flow.certificateId,
@@ -599,7 +864,10 @@ export class ReviewInvestigationProductionE2EHarness {
       providerKind: ReviewProviderKind.Codex,
       providerVoteIdentityHash: investigation.providerVoteLaneId,
       terminalOutcomeHash: certificate.terminalOutcomeHash,
-      expectedConclusion: InvestigationCertificateConclusion.Findings,
+      expectedConclusion:
+        certificate.conclusion === "findings"
+          ? InvestigationCertificateConclusion.Findings
+          : InvestigationCertificateConclusion.VerifiedClean,
       producerReleaseId: certificate.producerReleaseId,
       nowMs: Date.now(),
     });
@@ -608,6 +876,183 @@ export class ReviewInvestigationProductionE2EHarness {
       `investigation_certificate_not_accepted:${decision.reason}`,
     );
     return decision;
+  }
+
+  async retryTerminalBoundary(investigationId: string) {
+    const completed = requiredValue(
+      this.completed.get(investigationId),
+      "boundary_flow_missing",
+    );
+    return requiredHandler(this.routes.investigation.conclude).execute(
+      completed.concludeRequest,
+    );
+  }
+
+  async restoreBoundary(investigationId: string) {
+    const authorization = requiredValue(
+      this.authorization,
+      "boundary_authorization_missing",
+    );
+    return requiredHandler(this.routes.investigation.restore).execute({
+      ...envelope(`restore-${randomUUID()}`),
+      ...authorization,
+      investigationId,
+    });
+  }
+
+  // Snapshot complete durable rows, not only counts: identity, expiry, dossier,
+  // Findings, provenance, accepted observations and artifact hashes all matter.
+  async boundarySnapshot() {
+    const [
+      investigations,
+      turns,
+      leases,
+      receipts,
+      certificates,
+      observations,
+      artifacts,
+      outbox,
+      shadows,
+    ] = await Promise.all([
+      this.prisma.reviewInvestigation.findMany({
+        orderBy: { investigationId: "asc" },
+      }),
+      this.prisma.reviewInvestigationTurn.findMany({
+        orderBy: { turnId: "asc" },
+      }),
+      this.prisma.reviewInvestigationLease.findMany({
+        orderBy: { leaseId: "asc" },
+      }),
+      this.prisma.reviewInvestigationReceipt.findMany({
+        orderBy: { receiptId: "asc" },
+      }),
+      this.prisma.reviewInvestigationCertificate.findMany({
+        orderBy: { certificateId: "asc" },
+      }),
+      this.prisma.reviewEvidenceObservation.findMany({
+        orderBy: { observationId: "asc" },
+      }),
+      this.prisma.finalizedReviewProjectionArtifactV2.findMany({
+        orderBy: { artifactId: "asc" },
+      }),
+      this.prisma.outboxEvent.findMany({ orderBy: { id: "asc" } }),
+      this.prisma.reviewInvestigationShadowEvidence.findMany({
+        orderBy: { shadowEvidenceId: "asc" },
+        select: {
+          shadowEvidenceId: true,
+          recordHash: true,
+          certificateHash: true,
+          terminalPayloadHash: true,
+          terminalObservationCanonicalJson: true,
+        },
+      }),
+    ]);
+    return {
+      investigations,
+      turns,
+      leases,
+      receipts,
+      certificates,
+      observations,
+      artifacts,
+      outbox,
+      shadows,
+    };
+  }
+
+  async prepareCertificateAcceptance(flow: CompletedInvestigationFlow) {
+    const { execution } = requiredValue(
+      this.completed.get(flow.investigationId),
+      "boundary_flow_missing",
+    );
+    const aggregate = requiredValue(
+      await new PrismaInvestigationStore(this.prisma).findById(
+        flow.investigationId,
+      ),
+      "boundary_investigation_missing",
+    );
+    const certificate = requiredValue(
+      aggregate.certificate,
+      "boundary_certificate_missing",
+    );
+    const payload = prepareReviewObservationPayload(
+      JSON.parse(
+        certificate.terminalObservationCanonicalJson,
+      ) as ReviewObservationPayload,
+    );
+    ensure(
+      sha256(canonicalJson(payload.payload)) ===
+        certificate.terminalOutcomeHash,
+      "boundary_payload_hash_mismatch",
+    );
+    const lease = await this.acquireTurnLease(
+      execution,
+      `${flow.investigationId}-accept`,
+    );
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewEvidenceCommit,
+      {
+        ...envelope(`${flow.investigationId}-evidence`),
+        authorizationToken: execution.flow.authorizationToken,
+        leaseCapability: lease.leaseCapability,
+        idempotencyKey: `${flow.investigationId}-evidence`,
+        requestBodyHash: zeroHash,
+        attemptId: lease.attemptId,
+        sourceLeaseId: lease.leaseId,
+        ownerIdHash: execution.flow.ownerIdHash,
+        fencingToken: lease.fencingToken,
+        completionStatus: ProviderResultCompletionStatus.Success,
+        schemaValidated: true,
+        fullyConsumed: true,
+        actualModel: requiredString(certificate.terminalActualModel),
+        contextDependencyAttestationId: null,
+        contextDependencyAttestationHash: null,
+        investigationCertificateId: certificate.certificateId,
+        investigationCertificateHash: certificate.certificateHash,
+        payloadCanonicalJson: canonicalJson(payload.payload),
+        payloadHash: certificate.terminalOutcomeHash,
+        qualityFlags:
+          payload.findingCount > 0
+            ? [ReviewObservationQualityFlag.InvestigationFindings]
+            : [],
+        transportAttemptCount: 1,
+      },
+    );
+    return {
+      accept: () =>
+        requiredHandler(this.routes.evidence.commit).execute(request),
+      attach: async (observationId: string) => {
+        const attach = await withBodyHash(
+          ReviewActionV2OperationId.ReviewExecutionObservationAttach,
+          {
+            ...envelope(`${flow.investigationId}-attach`),
+            authorizationToken: execution.flow.authorizationToken,
+            leaseCapability: lease.leaseCapability,
+            idempotencyKey: `${flow.investigationId}-attach`,
+            requestBodyHash: zeroHash,
+            executionId: execution.flow.executionId,
+            workSlotId: execution.flow.workSlotId,
+            observationId,
+            providerInvocationKey: execution.flow.providerInvocationKey,
+            providerVoteIdentityHash: execution.providerVoteLaneId,
+            payloadHash: certificate.terminalOutcomeHash,
+            byteCount: payload.byteCount,
+            findingCount: payload.findingCount,
+            eligibilityPolicyVersion: reviewReuseEligibilityPolicyVersion,
+          },
+        );
+        return requiredHandler(this.routes.execution.attachObservation).execute(
+          attach,
+        );
+      },
+      finalize: (observationId: string) =>
+        this.base.finalize(execution.flow, {
+          investigation: {
+            observationId,
+            findings: payload.payload.normalizedFindings,
+          },
+        }),
+    };
   }
 
   async importEvaluation(flow: CompletedInvestigationFlow, label: string) {
@@ -743,6 +1188,13 @@ export class ReviewInvestigationProductionE2EHarness {
     prisma: PrismaClient,
     investigationTelemetrySamples?: ReviewInvestigationTerminalTelemetrySamplePort,
   ): ReviewActionV2ProductionRoutes {
+    if (this.ownedChild) {
+      ensure(
+        !investigationTelemetrySamples,
+        "item11_local_telemetry_override_forbidden",
+      );
+      return this.routes;
+    }
     return composeReviewActionV2ProductionRoutes({
       enabled: true,
       env: this.base.env,
@@ -784,11 +1236,13 @@ export class ReviewInvestigationProductionE2EHarness {
     });
   }
 
-  private async createExecution(): Promise<InvestigationExecution> {
+  private async createExecution(
+    attachSetup = false,
+  ): Promise<InvestigationExecution> {
     this.authorization ??= await this.base.authorize();
     const setupFlow = await this.base.createCommittedFlow({
       slotCount: 2,
-      attachSlotCount: 0,
+      attachSlotCount: attachSetup ? 1 : 0,
       attemptBudget: providerAttemptBudget,
       authorization: this.authorization,
     });
@@ -922,6 +1376,7 @@ export class ReviewInvestigationProductionE2EHarness {
     execution: InvestigationExecution,
     current: InvestigationRead,
     label: string,
+    maxObligationsForTurn = 16,
   ) {
     const request = await withBodyHash(
       ReviewActionV2OperationId.ReviewInvestigationTurnPlan,
@@ -934,7 +1389,7 @@ export class ReviewInvestigationProductionE2EHarness {
         expectedVersion: current.investigationVersion,
         dossierDigest: current.dossierDigest,
         leaseDurationMs: 120_000,
-        maxObligationsForTurn: 16,
+        maxObligationsForTurn,
         turnBudgetHash: sha256(`${label}:turn-budget`),
       } satisfies ReviewInvestigationTurnPlanRequest,
     );
@@ -1260,8 +1715,9 @@ export class ReviewInvestigationProductionE2EHarness {
 
 export async function createReviewInvestigationProductionE2EHarness(
   databaseUrl: string,
+  options: ReviewInvestigationProductionE2EHarnessOptions = {},
 ): Promise<ReviewInvestigationProductionE2EHarness> {
-  return ReviewInvestigationProductionE2EHarness.create(databaseUrl);
+  return ReviewInvestigationProductionE2EHarness.create(databaseUrl, options);
 }
 
 export async function resetReviewInvestigationProductionE2EDatabase(
@@ -1789,7 +2245,7 @@ function disposableFixtureTerminalSamples(
   };
 }
 
-async function conflictingCommitRequest(
+export async function conflictingCommitRequest(
   request: ReviewInvestigationTurnCommitRequest,
 ): Promise<ReviewInvestigationTurnCommitRequest> {
   const parsed = record(JSON.parse(request.turnObservationCanonicalJson));
@@ -1932,3 +2388,13 @@ function sha256(value: string): string {
 }
 
 const zeroHash = "0".repeat(64);
+
+function ephemeralSigningKeys(keyId: string): string {
+  return JSON.stringify([
+    {
+      keyId,
+      secretBase64: randomBytes(32).toString("base64"),
+      verifyUntil: null,
+    },
+  ]);
+}

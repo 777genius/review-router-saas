@@ -486,6 +486,21 @@ async function admissionFenceMatches(
   const releaseRow = await transaction.producerRelease.findUnique({
     where: { producerReleaseId: candidate.producerReleaseId },
   });
+  if (fence.expectedBaseProducerRelease) {
+    const baseRow = await transaction.producerRelease.findUnique({
+      where: {
+        producerReleaseId: fence.expectedBaseProducerRelease.producerReleaseId,
+      },
+    });
+    if (
+      !baseRow ||
+      baseRow.state !== ProducerReleaseState.Registered ||
+      producerReleaseImmutableKey(producerReleaseToDomain(baseRow)) !==
+        producerReleaseImmutableKey(fence.expectedBaseProducerRelease)
+    ) {
+      return false;
+    }
+  }
   const limits = await transaction.reviewProtocolLimitsV2.findUnique({
     where: {
       protocolLimitsProfileId: candidate.protocolLimitsProfileId,

@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import {
   ReviewConfigurationWriteConflictError,
   safeDefaultReviewConfiguration,
@@ -58,6 +59,7 @@ function createPrismaStub() {
   let committed = createInitialState();
   let transactionFailures: unknown[] = [];
   let transactionCalls = 0;
+  const events: string[] = [];
 
   const prisma = {
     async $transaction<T>(callback: (transaction: unknown) => Promise<T>) {
@@ -65,7 +67,9 @@ function createPrismaStub() {
       const failure = transactionFailures.shift();
       if (failure) throw failure;
       const transactionState = cloneState(committed);
-      const result = await callback(createTransactionClient(transactionState));
+      const result = await callback(
+        createTransactionClient(transactionState, events),
+      );
       committed = transactionState;
       return result;
     },
@@ -73,6 +77,7 @@ function createPrismaStub() {
 
   return {
     prisma,
+    events,
     state: () => committed,
     failNextAudit() {
       committed.failAudit = true;
@@ -126,14 +131,19 @@ function cloneState(state: State): State {
   };
 }
 
-function createTransactionClient(state: State) {
+function createTransactionClient(state: State, events: string[]) {
   return {
+    async $queryRaw(sql: Prisma.Sql) {
+      events.push(sql.text.includes("lock_shared(") ? "shared" : "exclusive");
+      return [];
+    },
     reviewConfiguration: {
       async findUnique(input: {
         where: {
           workspaceId_targetKey: { targetKey: string };
         };
       }) {
+        events.push("read");
         const record = state.configurations.get(
           input.where.workspaceId_targetKey.targetKey,
         );
@@ -146,6 +156,7 @@ function createTransactionClient(state: State) {
           workspaceId_targetKey: { targetKey: string };
         };
       }) {
+        events.push("write");
         const targetKey = input.where.workspaceId_targetKey.targetKey;
         let record = state.configurations.get(targetKey);
         if (!record) {
@@ -311,6 +322,15 @@ describe("Prisma review configuration operator mutation", () => {
       investigationProductionEffectsEnabled: false,
     });
     expect(stub.state().audits).toHaveLength(1);
+    expect(stub.events.slice(0, 4)).toEqual([
+      "shared",
+      "shared",
+      "exclusive",
+      "read",
+    ]);
+    expect(stub.events.filter((event) => event === "exclusive")).toHaveLength(
+      1,
+    );
   });
 
   it("rejects a stale inherited revision without creating an override", async () => {

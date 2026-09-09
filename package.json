@@ -89,7 +89,7 @@
     "codex-rotating:production-writer-observation": "node --import tsx scripts/capture-codex-rotating-production-writer.mjs",
     "codex-rotating:secret-write-boundary": "node scripts/check-codex-secret-write-boundary.mjs",
     "review-v2:e2e": "REVIEW_ROUTER_REVIEW_V2_E2E=1 vitest run scripts/review-action-v2-production-e2e/review-action-v2-production.e2e.test.ts",
-    "review-investigation:e2e": "REVIEW_ROUTER_REVIEW_INVESTIGATION_E2E=1 vitest run scripts/review-investigation-production-e2e/review-investigation-production.e2e.test.ts",
+    "review-investigation:e2e": "bash scripts/review-investigation-production-e2e/support/run-ci.fixture.sh",
     "review-investigation:paired-e2e": "REVIEW_ROUTER_REVIEW_INVESTIGATION_PAIRED_E2E=1 vitest run scripts/review-investigation-paired-e2e/review-investigation-paired.e2e.test.ts",
     "review-v2:admin": "node scripts/run-with-env.mjs node --conditions=production apps/api/dist/review-action-v2-operator-cli.js",
     "reviewrouter": "node scripts/run-with-env.mjs node --conditions=production apps/api/dist/reviewrouter-operator-cli.js",
@@ -165,6 +165,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@prisma/adapter-pg": "7.8.0",
     "@tailwindcss/postcss": "4.2.4",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^22.19.0",

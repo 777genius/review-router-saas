@@ -1,3 +1,10 @@
+import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import {
+  historical89InPlaceCustodyBinding,
+  reconcileHistorical89InPlaceOperation,
+} from "./render-historical89-operation.mjs";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { stripAtomicMigrationEnvelope } from "../run-codex-rotating-release-migration.mjs";
@@ -23,7 +30,7 @@ import {
   renderHistorical89InPlaceTransaction,
 } from "./render-historical89-inplace-transaction.mjs";
 
-const inventory = readRenderManagedCheckoutInventory();
+const inventory = readRenderHistorical96CheckoutInventory();
 const ledger = (count: number) =>
   inventory.slice(0, count).map((r, i) => ({
     migrationName: r.migrationName,
@@ -206,6 +213,7 @@ const build = (overrides: Record<string, unknown> = {}) =>
 describe("composed historical89 to96 in-place transaction", () => {
   it("applies exactly the seven immutable bodies in one uncommitted transaction", () => {
     const { sql } = build();
+    expect(sql).not.toContain("000098_certified_fork_effect_archive");
     expect(
       sql.match(/^BEGIN ISOLATION LEVEL READ COMMITTED;$/gmu),
     ).toHaveLength(1);
@@ -226,7 +234,7 @@ describe("composed historical89 to96 in-place transaction", () => {
       );
     }
     // Application order is the reviewed order, not directory order chance.
-    const positions = pending.map((row) => sql.indexOf(row.checksum));
+    const positions = pending.map((row) => sql.indexOf(row.checksum!));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(sql).not.toMatch(/migrate resolve|REASSIGN OWNED|DROP OWNED/u);
   });
@@ -511,6 +519,13 @@ describe("composed historical89 to96 in-place transaction", () => {
     expect(checked.ordered).toHaveLength(89);
     expect(inspectHistorical89InPlaceLedger(ledger(89)).count).toBe(89);
     expect(inspectHistorical89InPlaceLedger(ledger(96)).count).toBe(96);
+    const archive = readRenderManagedCheckoutInventory()[96]!;
+    expect(() =>
+      inspectHistorical89InPlaceLedger([
+        ...ledger(96),
+        { ...ledger(96)[95]!, ...archive },
+      ]),
+    ).toThrow("count");
     expect(() => inspectHistorical89InPlaceLedger(ledger(92))).toThrow(
       "managed_ledger_count",
     );
@@ -742,5 +757,173 @@ describe("composed historical89 outcome classification", () => {
         ...change,
       } as never),
     ).toEqual({ status: "hold-closed", replay: false });
+  });
+});
+
+describe("current permit reconciliation", () => {
+  const aclDelta = assertHistorical89InPlaceAclDelta({
+    baseline: before,
+    terminal: after(),
+    creators: ["reviewrouter"],
+  } as never);
+  const plan = {
+    kind: phase.kind,
+    admission: admission(),
+    binding: historical89InPlaceCustodyBinding(admission()),
+    coordinates: { epoch: 1, generation: 1, nonce: "0".repeat(32) },
+    reviewedTerminalCatalogDigest: renderManagedEvidenceDigest(baselineCatalog),
+    identityDigest: renderManagedEvidenceDigest(admission()),
+  };
+  const currentPermit = {
+    ...plan.binding,
+    kind: phase.kind,
+    admissionIdentityDigest: plan.identityDigest,
+    terminalCatalogDigest: plan.reviewedTerminalCatalogDigest,
+    epoch: "1",
+    generation: "1",
+    nonce: plan.coordinates.nonce,
+    state: "open",
+  };
+  const evidenceBase = {
+    plan,
+    backendState: "terminated",
+    rollbackConfirmed: true,
+    ledger: ledger(89),
+    terminalCatalog: baselineCatalog,
+    gate,
+    memberships: [originalMembership],
+    originalMembership,
+    aclDelta: undefined,
+    receipt: null,
+    currentPermit,
+    fenceHeld: true,
+  };
+  const fenced = (evidence: Record<string, unknown>) => {
+    const result = reconcileHistorical89InPlaceOperation(evidence as never);
+    assert.equal(result.decision, "fenced");
+    assert.equal(result.continueOperation, false);
+    assert.equal(result.replay, false);
+    return result;
+  };
+  it("exact89 rollback continues only with the matching current open permit", () => {
+    assert.deepEqual(reconcileHistorical89InPlaceOperation(evidenceBase), {
+      decision: "resume-same-operation",
+      replay: false,
+      continueOperation: true,
+      requiresSameAuthorityOperation: true,
+      requiresPermitEpochAdvance: true,
+      gate: "closed",
+      reasons: [],
+    });
+  });
+  for (const permit of [
+    null,
+    undefined,
+    {},
+    { ...currentPermit, extra: true },
+  ]) {
+    it(`rejects missing or malformed permit (${typeof permit})`, () => {
+      assert.deepEqual(
+        fenced({ ...evidenceBase, currentPermit: permit }).reasons,
+        ["current_permit_untrusted"],
+      );
+    });
+  }
+  it("omitted current permit fails closed", () => {
+    const evidence = { ...evidenceBase };
+    Reflect.deleteProperty(evidence, "currentPermit");
+    fenced(evidence);
+  });
+  for (const [field, values] of Object.entries({
+    state: ["terminal", "closed", "unknown", null],
+    epoch: ["2", "0", 1],
+    generation: ["2", "0", 1],
+    nonce: ["1".repeat(32)],
+    operationId: ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"],
+    kind: ["other"],
+    systemIdentifier: ["7300000000000000002"],
+    databaseOid: ["16402"],
+    databaseName: ["other"],
+    recoveryIdentitySha256: [digest(9)],
+    externalFenceSha256: [digest(9)],
+    admissionIdentityDigest: [digest(9)],
+    terminalCatalogDigest: [digest(9)],
+  })) {
+    for (const value of values)
+      it(`rejects changed permit ${field}=${value}`, () => {
+        assert.deepEqual(
+          fenced({
+            ...evidenceBase,
+            currentPermit: { ...currentPermit, [field]: value },
+          }).reasons,
+          ["current_permit_untrusted"],
+        );
+      });
+  }
+  it("open permit cannot override unknown outcomes or an unreadable receipt", () => {
+    for (const change of [
+      { backendState: "unknown" },
+      { rollbackConfirmed: false },
+      { fenceHeld: false },
+      { ledger: ledger(90) },
+      { receipt: undefined },
+      { receipt: {} },
+    ])
+      fenced({ ...evidenceBase, ...change });
+  });
+  it("exact96 still requires a matching verified terminal effect receipt", () => {
+    const receipt = {
+      kind: phase.kind,
+      operationId: plan.binding.operationId,
+      generation: "1",
+      epoch: "1",
+      nonce: plan.coordinates.nonce,
+      ledgerManifest: phase.targetManifest,
+      terminalCatalogDigest: plan.reviewedTerminalCatalogDigest,
+      backendPid: 42,
+      transactionId: "123",
+      recordedAt: "2026-09-08T00:00:00.000Z",
+      permitState: "terminal",
+      effectFingerprint: "",
+    };
+    receipt.effectFingerprint = `sha256:${createHash("sha256")
+      .update(
+        [
+          receipt.kind,
+          receipt.operationId,
+          plan.identityDigest,
+          plan.binding.systemIdentifier,
+          plan.binding.databaseOid,
+          plan.binding.databaseName,
+          plan.binding.recoveryIdentitySha256,
+          plan.binding.externalFenceSha256,
+          receipt.generation,
+          receipt.epoch,
+          receipt.nonce,
+          receipt.ledgerManifest,
+          receipt.terminalCatalogDigest,
+        ].join("\n"),
+      )
+      .digest("hex")}`;
+    const evidence = {
+      ...evidenceBase,
+      ledger: ledger(96),
+      rollbackConfirmed: false,
+      aclDelta,
+      receipt,
+      currentPermit: { ...currentPermit, state: "terminal" },
+    };
+    assert.equal(
+      reconcileHistorical89InPlaceOperation(evidence).decision,
+      "reconciled-without-replay",
+    );
+    for (const bad of [
+      null,
+      { ...receipt, nonce: "1".repeat(32) },
+      { ...receipt, effectFingerprint: digest(9) },
+      { ...receipt, permitState: "open" },
+    ]) {
+      fenced({ ...evidence, receipt: bad });
+    }
   });
 });
