@@ -136,7 +136,7 @@ BEGIN
     IF NEW.evidence->item.key IS DISTINCT FROM item.value THEN RAISE EXCEPTION 'preparation_evidence_immutable'; END IF;
   END LOOP;
   FOR item IN SELECT key,value FROM jsonb_each_text(NEW.evidence) LOOP
-    IF item.key NOT IN ('recoveryIdentitySha256','externalFenceSha256') OR item.value !~ '^sha256:[a-f0-9]{64}$' THEN
+    IF item.key NOT IN ('recoveryIdentitySha256','externalFenceSha256') OR item.value IS NULL OR item.value !~ '^sha256:[a-f0-9]{64}$' THEN
       RAISE EXCEPTION 'preparation_evidence_shape'; END IF;
   END LOOP;
   IF NEW.finalization IS NOT NULL THEN
@@ -156,6 +156,10 @@ CREATE TRIGGER historical89_preparation_immutable BEFORE INSERT OR UPDATE OR DEL
 FOR EACH ROW EXECUTE FUNCTION ${schema}.historical89_preparation_immutable();
 ALTER TABLE ${table} ENABLE ALWAYS TRIGGER historical89_preparation_immutable;`;
 const oid = (r) => `(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='${r}')`;
+const externalNamespace = `n.nspname NOT IN ('${schema}','pg_catalog','information_schema','pg_toast')
+  AND n.nspname !~ '^pg_(toast_)?temp_'`;
+const accessibleExternalNamespace = `${externalNamespace}
+  AND pg_catalog.has_schema_privilege(${oid(reader)},n.oid,'USAGE')`;
 
 /** PL/pgSQL guard shared with final attestation. It compares definitions to
  * reviewed source, never to a digest stored in the schema being authenticated.
@@ -242,7 +246,23 @@ export function renderHistorical89PreparationCatalogGuard(
   OR EXISTS (SELECT 1 FROM pg_catalog.pg_database d CROSS JOIN LATERAL pg_catalog.aclexplode(d.datacl) a
     WHERE a.grantee IN (${oid(owner)},${oid(reader)}) AND (a.grantee<>${oid(reader)} OR d.datname<>current_database() OR a.privilege_type<>'CONNECT' OR a.is_grantable))
   OR EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl WHERE defaclnamespace=(SELECT oid FROM pg_catalog.pg_namespace WHERE nspname='${schema}')
-      OR defaclrole IN (${oid(owner)},${oid(reader)})) THEN
+      OR defaclrole IN (${oid(owner)},${oid(reader)}))
+  -- Effective privileges include PUBLIC and implicit ownership privileges.
+  OR EXISTS (SELECT 1 FROM pg_catalog.pg_database d
+    WHERE pg_catalog.has_database_privilege(${oid(reader)},d.oid,'CREATE'))
+  OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE ${externalNamespace}
+    AND pg_catalog.has_schema_privilege(${oid(reader)},n.oid,'CREATE'))
+  OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+    WHERE ${accessibleExternalNamespace} AND c.relkind IN ('r','p','v','m','f')
+    AND (pg_catalog.has_table_privilege(${oid(reader)},c.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+      OR pg_catalog.has_any_column_privilege(${oid(reader)},c.oid,'INSERT,UPDATE,REFERENCES')))
+  OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+    WHERE ${accessibleExternalNamespace} AND c.relkind='S'
+    AND pg_catalog.has_sequence_privilege(${oid(reader)},c.oid,'USAGE,UPDATE'))
+  OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE ${accessibleExternalNamespace} AND p.prosecdef AND p.prokind IN ('f','p')
+    AND p.prorettype NOT IN ('pg_catalog.trigger'::regtype,'pg_catalog.event_trigger'::regtype)
+    AND pg_catalog.has_function_privilege(${oid(reader)},p.oid,'EXECUTE')) THEN
     RAISE EXCEPTION 'preparation_catalog_attestation';
   END IF;
   IF (SELECT count(*) FROM ${table})<>1 OR NOT EXISTS (SELECT 1 FROM ${table} p WHERE
@@ -404,7 +424,7 @@ export function renderHistorical89PreparationObserve(identity, request) {
     request,
     `
  IF p.evidence ? ${q(request.kind)} THEN
-   IF p.evidence->>${q(request.kind)}<>${q(request.digest)} THEN RAISE EXCEPTION 'preparation_evidence_conflict'; END IF;
+   IF p.evidence->>${q(request.kind)} IS DISTINCT FROM ${q(request.digest)} THEN RAISE EXCEPTION 'preparation_evidence_conflict'; END IF;
  ELSE
    UPDATE ${table} SET revision=revision+1,evidence=evidence||jsonb_build_object(${q(request.kind)},${q(request.digest)});
  END IF;`,

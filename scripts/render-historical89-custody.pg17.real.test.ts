@@ -1258,6 +1258,168 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
     ).toThrow("preparation_catalog_attestation");
   });
 
+  it.each([
+    ["TABLE preparation_public_probe", "INSERT"],
+    ["TABLE preparation_public_probe", "UPDATE (value)"],
+    ["TABLE preparation_public_probe", "INSERT (value)"],
+    ["TABLE preparation_public_probe", "REFERENCES (value)"],
+    ["TABLE preparation_public_probe", "MAINTAIN"],
+    ["SCHEMA public", "CREATE"],
+    ["SCHEMA preparation_no_usage", "CREATE"],
+    [`DATABASE ${target}`, "CREATE"],
+    ["SEQUENCE preparation_public_sequence", "USAGE"],
+    ["FUNCTION public.preparation_public_definer()", "EXECUTE"],
+    ["PROCEDURE public.preparation_public_procedure()", "EXECUTE"],
+  ])(
+    "rejects effective PUBLIC %s %s without revoking it",
+    (object, privilege) => {
+      const db = clone();
+      const b = stagedIdentity(db);
+      pg.query(
+        db,
+        `
+      CREATE TABLE public.preparation_public_probe (value integer);
+      CREATE SCHEMA preparation_no_usage;
+      CREATE SEQUENCE public.preparation_public_sequence;
+      CREATE FUNCTION public.preparation_public_definer() RETURNS integer
+        LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
+      CREATE PROCEDURE public.preparation_public_procedure()
+        LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN NULL; END';
+      REVOKE EXECUTE ON FUNCTION public.preparation_public_definer() FROM PUBLIC;
+      REVOKE EXECUTE ON PROCEDURE public.preparation_public_procedure() FROM PUBLIC;
+    `,
+      );
+      const grant = `GRANT ${privilege} ON ${object} TO PUBLIC`;
+      const revoke = `REVOKE ${privilege} ON ${object} FROM PUBLIC`;
+      pg.query(db, grant);
+      expect(() =>
+        pg.query(db, renderHistorical89PreparationPrepare(b).sql),
+      ).toThrow("preparation_catalog_attestation");
+      expect(
+        pg.query(
+          db,
+          `
+      SELECT count(*) FROM pg_roles WHERE rolname IN
+        ('reviewrouter_operation_custody_reader','reviewrouter_operation_custody_owner')
+    `,
+        ),
+      ).toBe("0");
+      // A repeat still fails: preflight did not silently remove the PUBLIC grant.
+      expect(() =>
+        pg.query(db, renderHistorical89PreparationPrepare(b).sql),
+      ).toThrow("preparation_catalog_attestation");
+      pg.query(db, revoke);
+      const baseline = read(db, renderHistorical89PreparationPrepare(b).sql);
+      pg.query(db, grant);
+      expect(() =>
+        pg.query(
+          db,
+          renderHistorical89PreparationReadSql(b),
+          "reviewrouter_operation_custody_reader",
+        ),
+      ).toThrow("preparation_catalog_attestation");
+      const digest = renderManagedEvidenceDigest({
+        publicPrivilege: privilege,
+      });
+      expect(() =>
+        stageObservation(b, 1, "recoveryIdentitySha256", digest),
+      ).toThrow("preparation_catalog_attestation");
+      pg.query(db, revoke);
+      expect(
+        read(
+          db,
+          renderHistorical89PreparationReadSql(b),
+          "reviewrouter_operation_custody_reader",
+        ),
+      ).toEqual(baseline);
+      expect(
+        stageObservation(b, 1, "recoveryIdentitySha256", digest).revision,
+      ).toBe("2");
+    },
+  );
+
+  it("allows PUBLIC schema USAGE, invoker functions and database TEMP", () => {
+    const db = clone();
+    const b = stagedIdentity(db);
+    pg.query(
+      db,
+      `
+      GRANT USAGE ON SCHEMA public TO PUBLIC;
+      GRANT TEMPORARY ON DATABASE ${target} TO PUBLIC;
+      CREATE FUNCTION public.preparation_public_invoker() RETURNS integer
+        LANGUAGE sql SECURITY INVOKER AS 'SELECT 1';
+      GRANT EXECUTE ON FUNCTION public.preparation_public_invoker() TO PUBLIC;
+    `,
+    );
+    const baseline = read(db, renderHistorical89PreparationPrepare(b).sql);
+    expect(
+      pg.query(
+        db,
+        `
+      CREATE TEMP TABLE preparation_temp_probe (value integer);
+      SELECT public.preparation_public_invoker() + pg_catalog.length('x');
+    `,
+        "reviewrouter_operation_custody_reader",
+      ),
+    ).toBe("2");
+    expect(
+      read(
+        db,
+        renderHistorical89PreparationReadSql(b),
+        "reviewrouter_operation_custody_reader",
+      ),
+    ).toEqual(baseline);
+  });
+
+  it.each(["recoveryIdentitySha256", "externalFenceSha256"])(
+    "rejects owner DML containing JSON null evidence for %s",
+    (kind) => {
+      const db = clone();
+      const b = stagedIdentity(db);
+      const baseline = read(db, renderHistorical89PreparationPrepare(b).sql);
+      expect(() =>
+        pg.query(
+          db,
+          `
+        BEGIN;
+        GRANT reviewrouter_operation_custody_owner TO reviewrouter
+          WITH INHERIT TRUE, SET TRUE;
+        SET LOCAL ROLE reviewrouter_operation_custody_owner;
+        UPDATE release_operation_custody.historical89_preparation
+          SET revision=revision+1,evidence=jsonb_build_object('${kind}',NULL);
+        COMMIT;
+      `,
+        ),
+      ).toThrow("preparation_evidence_shape");
+      expect(
+        read(
+          db,
+          renderHistorical89PreparationReadSql(b),
+          "reviewrouter_operation_custody_reader",
+        ),
+      ).toEqual(baseline);
+      const digest = renderManagedEvidenceDigest({ validObservation: kind });
+      const observed = stageObservation(b, 1, kind, digest);
+      expect(observed.revision).toBe("2");
+      expect(observed.evidence).toEqual({ [kind]: digest });
+      expect(() =>
+        stageObservation(
+          b,
+          2,
+          kind,
+          renderManagedEvidenceDigest({ conflictingObservation: kind }),
+        ),
+      ).toThrow("preparation_evidence_conflict");
+      expect(
+        read(
+          db,
+          renderHistorical89PreparationReadSql(b),
+          "reviewrouter_operation_custody_reader",
+        ),
+      ).toEqual(observed);
+    },
+  );
+
   it("denies restricted-role writes and owner-only transitions", () => {
     const b = stagedIdentity(clone());
     pg.query(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
