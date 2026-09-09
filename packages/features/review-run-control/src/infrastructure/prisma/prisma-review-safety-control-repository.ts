@@ -1,3 +1,7 @@
+import {
+  acquireCurrentScopeGuards,
+  type CurrentScopeGuard,
+} from "@reviewrouter/platform-db";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   reviewSafetyPolicyKey,
@@ -9,6 +13,7 @@ import {
 } from "../../domain/review-safety-policy";
 import {
   ReviewSafetyCapability,
+  ReviewSafetyPolicyScope,
   ReviewSafetyRolloutMode,
   canonicalJson,
 } from "../../domain/review-run-control-types";
@@ -107,6 +112,9 @@ export class PrismaReviewSafetyControlRepository
   }) {
     const key = reviewSafetyPolicyKey(input.policy);
     return this.prisma.$transaction(async (transaction) => {
+      await acquireCurrentScopeGuards(transaction, [
+        safetyCurrentScope(input.policy.scope),
+      ]);
       await lockReviewRunControlKey(transaction, "review-safety-policy", key);
       const currentRow = await transaction.reviewSafetyPolicy.findFirst({
         where: {
@@ -176,6 +184,9 @@ export class PrismaReviewSafetyControlRepository
   }) {
     const key = reviewSafetyScopeKey(input.control.scope);
     return this.prisma.$transaction(async (transaction) => {
+      await acquireCurrentScopeGuards(transaction, [
+        safetyCurrentScope(input.control.scope),
+      ]);
       await lockReviewRunControlKey(
         transaction,
         "review-safety-emergency",
@@ -358,5 +369,27 @@ function rolloutModeToPersistence(
       return "allowlisted";
     case ReviewSafetyRolloutMode.Enabled:
       return "enabled";
+  }
+}
+
+// Commands address an exact scope, never move an existing identity to a new
+// scope. Selector replacement affects that same scope, including empty sets.
+function safetyCurrentScope(scope: ReviewSafetyScope): CurrentScopeGuard {
+  switch (scope.scope) {
+    case ReviewSafetyPolicyScope.Global:
+      return { scope: "global", mode: "exclusive" };
+    case ReviewSafetyPolicyScope.Workspace:
+      return {
+        scope: "workspace",
+        workspaceId: scope.workspaceId,
+        mode: "exclusive",
+      };
+    case ReviewSafetyPolicyScope.Repository:
+      return {
+        scope: "repository",
+        workspaceId: scope.workspaceId,
+        repositoryId: scope.repositoryConnectionId,
+        mode: "exclusive",
+      };
   }
 }
