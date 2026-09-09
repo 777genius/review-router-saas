@@ -162,7 +162,38 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
-  it("rehearses every checked-in rotating migration from 000060 in order", () => {
+  it("executes the inventory guard with exact099 and rejects boundary drift", () => {
+    const declarations = source
+      .match(/const migration\d+[A-Za-z]*Name =\s*"[^"]+";/gu)
+      ?.join("\n");
+    const start = source.indexOf("const rotatingMigrationNames =");
+    const end = source.indexOf("const baseUrl =", start);
+    const names = readdirSync(
+      resolve(import.meta.dirname, "../packages/platform/db/prisma/migrations"),
+    );
+    const check = (entries: string[]) =>
+      runInNewContext(`${declarations}\n${source.slice(start, end)}`, {
+        migrationsDirectory: "fixture",
+        readdirSync: () => entries,
+        assert: (ok: boolean, message: string) => {
+          if (!ok) throw new Error(message);
+        },
+      });
+    expect(() => check(names)).not.toThrow();
+    const exact99 = "000099_certified_fork_proof_facts";
+    for (const candidate of [
+      names.filter((name) => name !== exact99),
+      [...names, exact99],
+      names.map((name) => (name === exact99 ? "000099_unknown" : name)),
+      [...names, "000097_future_migration"],
+    ]) {
+      expect(() => check(candidate)).toThrow(
+        "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
+      );
+    }
+  });
+
+  it("classifies every checked-in rotating migration from 000060 in order", () => {
     const inventory =
       /JSON\.stringify\(\[([\s\S]+?)\]\),\n\s+"rehearsal migration inventory/u.exec(
         source,

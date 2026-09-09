@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   readRenderManagedCheckoutInventory,
@@ -585,4 +588,158 @@ describe("native runner startup exit contract", () => {
       }
     },
   );
+});
+
+// Launch the actual executable with only pg replaced. All classification,
+// durable-request authentication, and terminal-evidence validators remain real.
+// The adapter is in-process: it cannot open a socket or execute database SQL.
+describe("runner executable mutation denial", () => {
+  it.each([
+    "baseline89",
+    "already96",
+    "missing request",
+    "wrong digest",
+    "missing receipt",
+    "stale permit",
+    "wrong reader",
+  ])("%s", async (mode) => {
+    const f = fixture();
+    await verifyHistorical89Already96(f.client, f.reader, f.request);
+    const verificationQueries = [...f.queries];
+    if (mode === "baseline89") f.state.ledger = ledger(89);
+    if (mode === "missing receipt") f.state.receipt = null;
+    if (mode === "stale permit") f.state.permit.epoch = "2";
+    if (mode === "wrong reader") f.state.role.current = "reviewrouter";
+    const responses: Record<string, unknown> = {};
+    // Exact known read queries only; an unexpected query is recorded and fails.
+    for (const sql of [renderManagedLedgerSql, ...verificationQueries])
+      responses[sql] = await f.client.query(sql);
+    const dir = mkdtempSync(join(tmpdir(), "rr-runner-denial-"));
+    try {
+      const requestPath = join(dir, "request.json");
+      const tracePath = join(dir, "trace.jsonl");
+      const adapterPath = join(dir, "pg.mjs");
+      const loaderPath = join(dir, "register.mjs");
+      writeFileSync(requestPath, bytesOf());
+      writeFileSync(tracePath, "");
+      writeFileSync(
+        adapterPath,
+        String.raw`import { appendFileSync } from "node:fs";
+const responses = ${JSON.stringify(responses)};
+const trace = (event) => appendFileSync(${JSON.stringify(tracePath)}, JSON.stringify(event) + "\n");
+let nextId = 0;
+export default { Client: class {
+  constructor({ connectionString }) {
+    this.id = nextId++;
+    const url = new URL(connectionString);
+    this.connectionParameters = { host: url.hostname, port: 5432, database: url.pathname.slice(1) };
+  }
+  async connect() { trace({ event: "connect", id: this.id }); }
+  async end() { trace({ event: "end", id: this.id }); }
+  async query(sql) {
+    trace({ event: "query", id: this.id, sql });
+    if (!Object.hasOwn(responses, sql)) throw new Error("unexpected_adapter_query");
+    return responses[sql];
+  }
+}};
+`,
+      );
+      writeFileSync(
+        loaderPath,
+        `import { registerHooks } from "node:module";
+registerHooks({ resolve(specifier, context, nextResolve) {
+  if (specifier === "pg") return { url: ${JSON.stringify(pathToFileURL(adapterPath).href)}, shortCircuit: true };
+  return nextResolve(specifier, context);
+}});
+`,
+      );
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          import.meta.resolve("tsx"),
+          "--import",
+          loaderPath,
+          fileURLToPath(
+            new URL(
+              "../run-historical89-inplace-operation.mjs",
+              import.meta.url,
+            ),
+          ),
+        ],
+        {
+          // Do not inherit credentials, NODE_OPTIONS, or database overrides.
+          env: {
+            REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:
+              "postgres://fixture@unit.invalid/review_router_dimy",
+            REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH:
+              mode === "missing request" ? "" : requestPath,
+            REVIEW_ROUTER_HISTORICAL89_OPERATION_ID: admission().operationId,
+            REVIEW_ROUTER_HISTORICAL89_VERIFICATION_SHA256:
+              mode === "wrong digest" ? digest(9) : hashOf(bytesOf()),
+          },
+          encoding: "utf8",
+          timeout: 15_000,
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.signal).toBeNull();
+      expect(result.status, result.stderr).toBe(mode === "already96" ? 0 : 1);
+      const events = readFileSync(tracePath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const queries = events
+        .filter((e) => e.event === "query")
+        .map((e) => e.sql);
+      expect(
+        events
+          .filter((e) => e.event === "end")
+          .map((e) => e.id)
+          .sort(),
+      ).toEqual(
+        events
+          .filter((e) => e.event === "connect")
+          .map((e) => e.id)
+          .sort(),
+      );
+      if (mode === "baseline89") {
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toBe(
+          "historical89_inplace_failed:production_mutation_not_authorized\n",
+        );
+        expect(events).toEqual([
+          { event: "connect", id: 0 },
+          { event: "query", id: 0, sql: renderManagedLedgerSql },
+          { event: "end", id: 0 },
+        ]);
+      } else {
+        expect(result.stderr).toBe("");
+        expect(JSON.parse(result.stdout)).toMatchObject(
+          mode === "already96"
+            ? {
+                outcome: "already-96",
+                authorizesProductionMutation: false,
+                verification: "read-only-snapshot",
+                receiptDigest: f.state.receipt.effectFingerprint,
+              }
+            : {
+                outcome: "fenced-unresolved",
+                reason: "already96_verification_failed",
+              },
+        );
+        if (mode === "already96")
+          expect(queries).toEqual([
+            renderManagedLedgerSql,
+            ...verificationQueries,
+          ]);
+        if (mode === "missing request" || mode === "wrong digest")
+          expect(queries).toEqual([renderManagedLedgerSql]);
+        for (const sql of queries)
+          expect(Object.hasOwn(responses, sql)).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
