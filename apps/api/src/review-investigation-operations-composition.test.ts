@@ -460,7 +460,9 @@ describe("review investigation operations production composition", () => {
     const prisma = fakePrisma();
     const diagnostics = { record: vi.fn() };
     const investigation = terminalInvestigation();
-    const investigations = { findById: vi.fn().mockResolvedValue(investigation) };
+    const investigations = {
+      findById: vi.fn().mockResolvedValue(investigation),
+    };
     const sources = {
       resolveSource: vi
         .fn()
@@ -477,17 +479,23 @@ describe("review investigation operations production composition", () => {
     await compose().recordConcluded(input);
     const firstWrite =
       prisma.reviewInvestigationTelemetrySample.create.mock.calls[0]?.[0];
-    expect(firstWrite?.data.source).toBe(InvestigationTelemetrySource.Allowlisted);
+    expect(firstWrite?.data.source).toBe(
+      InvestigationTelemetrySource.Allowlisted,
+    );
     prisma.reviewInvestigationTelemetrySample.findUnique.mockResolvedValue({
       source: firstWrite?.data.source,
       payloadHash: firstWrite?.data.payloadHash,
     });
     // Production's rollout resolver returns Shadow once emergency-disabled.
-    sources.resolveSource.mockResolvedValue(InvestigationTelemetrySource.Shadow);
+    sources.resolveSource.mockResolvedValue(
+      InvestigationTelemetrySource.Shadow,
+    );
     await compose().recordConcluded(input);
     await compose().recordConcluded(input);
     expect(sources.resolveSource).toHaveBeenCalledOnce();
-    expect(prisma.reviewInvestigationTelemetrySample.create).toHaveBeenCalledOnce();
+    expect(
+      prisma.reviewInvestigationTelemetrySample.create,
+    ).toHaveBeenCalledOnce();
     expect(diagnostics.record).not.toHaveBeenCalled();
 
     investigations.findById.mockResolvedValue({
@@ -499,7 +507,9 @@ describe("review investigation operations production composition", () => {
     expect(diagnostics.record).toHaveBeenCalledWith(
       ReviewInvestigationOperationsDiagnosticCode.TerminalTelemetryRecordFailed,
     );
-    expect(prisma.reviewInvestigationTelemetrySample.create).toHaveBeenCalledOnce();
+    expect(
+      prisma.reviewInvestigationTelemetrySample.create,
+    ).toHaveBeenCalledOnce();
   });
 });
 

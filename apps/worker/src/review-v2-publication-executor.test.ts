@@ -525,11 +525,13 @@ describe("protocol v2 publication executor", () => {
     const proof = vi.spyOn(fixture.application, "proveNoEffect");
     const terminalization = vi.spyOn(fixture.application, "terminalizeUnknown");
 
-    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual({
-      status: ReviewV2PublicationExecutionStatus.Terminalized,
-      safeReason: "publication_effect_gate_disabled",
-      terminalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
-    });
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Terminalized,
+        safeReason: "publication_effect_gate_disabled",
+        terminalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
+      },
+    );
     const view = await fixture.repository.findById("publication-1");
     expect(view).toMatchObject({
       attempt: { state: "terminal", terminalOutcome: "failed_no_effect" },
@@ -538,7 +540,8 @@ describe("protocol v2 publication executor", () => {
           state: "no_effect_proven",
           noEffectProofId: expect.any(String),
           noEffectProofHash: expect.stringMatching(/^[a-f0-9]{64}$/),
-          noEffectReason: "definitely_no_effect:publication_effect_gate_disabled",
+          noEffectReason:
+            "definitely_no_effect:publication_effect_gate_disabled",
           noEffectProvenAt: initialTime,
         },
       ],
@@ -558,11 +561,13 @@ describe("protocol v2 publication executor", () => {
     );
 
     fixture.effectGate.decision = ReviewV2PublicationEffectGateDecision.Allowed;
-    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual({
-      status: ReviewV2PublicationExecutionStatus.Terminalized,
-      safeReason: "publication_failed_no_effect",
-      terminalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
-    });
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Terminalized,
+        safeReason: "publication_failed_no_effect",
+        terminalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
+      },
+    );
     expect(await fixture.repository.findById("publication-1")).toEqual(view);
     expect(proof).toHaveBeenCalledTimes(1);
     expect(terminalization).toHaveBeenCalledTimes(1);
@@ -573,23 +578,27 @@ describe("protocol v2 publication executor", () => {
 
   it("replays durable disabled-gate proof after terminalization fails without reopening SCM", async () => {
     const fixture = await createFixture({ claimDurationMs: 1_000 });
-    fixture.effectGate.decision = ReviewV2PublicationEffectGateDecision.Disabled;
+    fixture.effectGate.decision =
+      ReviewV2PublicationEffectGateDecision.Disabled;
     const proof = vi.spyOn(fixture.application, "proveNoEffect");
     const terminalization = vi
       .spyOn(fixture.application, "terminalizeUnknown")
       .mockRejectedValueOnce(new Error("terminalization_unavailable"));
 
-    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual({
-      status: ReviewV2PublicationExecutionStatus.Retryable,
-      safeReason: "publication_terminal_outcome_ack_unknown",
-    });
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Retryable,
+        safeReason: "publication_terminal_outcome_ack_unknown",
+      },
+    );
     const beforeRetry = await fixture.repository.findById("publication-1");
     expect(beforeRetry).toMatchObject({
       attempt: { terminalOutcome: null },
       operationAttempts: [
         {
           state: "no_effect_proven",
-          noEffectReason: "definitely_no_effect:publication_effect_gate_disabled",
+          noEffectReason:
+            "definitely_no_effect:publication_effect_gate_disabled",
         },
       ],
       effects: [],
@@ -600,13 +609,17 @@ describe("protocol v2 publication executor", () => {
     fixture.effectGate.decision = ReviewV2PublicationEffectGateDecision.Allowed;
     fixture.freshness.current = changedFreshness();
 
-    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual({
-      status: ReviewV2PublicationExecutionStatus.Terminalized,
-      safeReason: "scm_mutation_rejected_no_effect",
-      terminalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
-    });
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Terminalized,
+        safeReason: "scm_mutation_rejected_no_effect",
+        terminalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
+      },
+    );
     const afterRetry = await fixture.repository.findById("publication-1");
-    expect(afterRetry?.operationAttempts).toEqual(beforeRetry?.operationAttempts);
+    expect(afterRetry?.operationAttempts).toEqual(
+      beforeRetry?.operationAttempts,
+    );
     expect(afterRetry).toMatchObject({
       attempt: { state: "terminal", terminalOutcome: "failed_no_effect" },
       effects: [],
@@ -628,16 +641,21 @@ describe("protocol v2 publication executor", () => {
       true,
     );
     const proof = vi.spyOn(fixture.application, "proveNoEffect");
-    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual({
-      status: ReviewV2PublicationExecutionStatus.Retryable,
-      safeReason: "scm_timeout",
-    });
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Retryable,
+        safeReason: "scm_timeout",
+      },
+    );
     fixture.gateway.applyError = null;
-    fixture.effectGate.decision = ReviewV2PublicationEffectGateDecision.Disabled;
-    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual({
-      status: ReviewV2PublicationExecutionStatus.Retryable,
-      safeReason: "publication_effect_gate_disabled",
-    });
+    fixture.effectGate.decision =
+      ReviewV2PublicationEffectGateDecision.Disabled;
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Retryable,
+        safeReason: "publication_effect_gate_disabled",
+      },
+    );
     expect(proof).not.toHaveBeenCalled();
     expect(await fixture.repository.findById("publication-1")).toMatchObject({
       attempt: { terminalOutcome: null },
@@ -685,7 +703,8 @@ describe("protocol v2 publication executor", () => {
         effects: [],
         tombstones: [],
       });
-      fixture.effectGate.decision = ReviewV2PublicationEffectGateDecision.Allowed;
+      fixture.effectGate.decision =
+        ReviewV2PublicationEffectGateDecision.Allowed;
       fixture.effectGate.error = null;
       await expect(
         fixture.executor.execute(executionCommand()),

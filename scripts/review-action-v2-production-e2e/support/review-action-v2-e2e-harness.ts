@@ -240,9 +240,10 @@ export class ReviewActionV2E2EHarness {
     });
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
-      const request = input instanceof Request
-        ? input : new Request(input.toString(), init);
-      if (request.method === "GET") await options.beforeFakeGitHubRead?.(request);
+      const request =
+        input instanceof Request ? input : new Request(input.toString(), init);
+      if (request.method === "GET")
+        await options.beforeFakeGitHubRead?.(request);
       return fakeGitHub.fetch(input, init);
     };
     const env: Readonly<Record<string, string>> = Object.freeze({
@@ -257,21 +258,37 @@ export class ReviewActionV2E2EHarness {
           ? { investigationProfile: options.investigationProfile }
           : {}),
       }),
-      ...(options.investigationProductionEffects ? {
-        REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED: "1",
-        REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED: "1",
-        REVIEW_ROUTER_REVIEW_INVESTIGATION_SELECTORS_JSON: JSON.stringify(
-          Object.fromEntries(["production_effects", "verified_clean"].map(capability => [capability, [{
-            workspaceIds: [workspaceId], repositoryConnectionIds: [repositoryConnectionId],
-            providers: ["codex"], trustDomains: ["trusted_managed"], producerReleaseIds: [producerReleaseId],
-          }]])),
-        ),
-      } : {}),
+      ...(options.investigationProductionEffects
+        ? {
+            REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED: "1",
+            REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED: "1",
+            REVIEW_ROUTER_REVIEW_INVESTIGATION_SELECTORS_JSON: JSON.stringify(
+              Object.fromEntries(
+                ["production_effects", "verified_clean"].map((capability) => [
+                  capability,
+                  [
+                    {
+                      workspaceIds: [workspaceId],
+                      repositoryConnectionIds: [repositoryConnectionId],
+                      providers: ["codex"],
+                      trustDomains: ["trusted_managed"],
+                      producerReleaseIds: [producerReleaseId],
+                    },
+                  ],
+                ]),
+              ),
+            ),
+          }
+        : {}),
       ...(options.environmentOverrides ?? {}),
       // Keep the object frozen while letting both compositions reread fixture state.
       get REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED() {
-        return options.investigationEmergencyValue?.() ??
-          options.environmentOverrides?.REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED ?? "0";
+        return (
+          options.investigationEmergencyValue?.() ??
+          options.environmentOverrides
+            ?.REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED ??
+          "0"
+        );
       },
     });
 
@@ -340,7 +357,9 @@ export class ReviewActionV2E2EHarness {
     await this.prisma.$disconnect();
   }
 
-  async authorize(input: { readonly sourceRunAttempt?: string } = {}): Promise<ReviewActionV2E2EAuthorization> {
+  async authorize(
+    input: { readonly sourceRunAttempt?: string } = {},
+  ): Promise<ReviewActionV2E2EAuthorization> {
     const runAttempt = input.sourceRunAttempt ?? "1";
     const oidcToken = await this.signOidcToken(runAttempt);
     const request: ReviewRunAuthorizeRequest = {
@@ -798,17 +817,23 @@ export class ReviewActionV2E2EHarness {
     const lifecycleStateHash = sha256(`${flow.executionId}-lifecycle`);
     const commandLedgerWatermark = "0";
     const projection = {
-      ...(options.investigation ? {
-        authoritativeObservationIds: [options.investigation.observationId],
-      } : {}),
+      ...(options.investigation
+        ? {
+            authoritativeObservationIds: [options.investigation.observationId],
+          }
+        : {}),
       commandLedgerWatermark,
       coverage: { state: allowPartial ? "partial" : "complete" },
       envelopeVersion: "review_projection.v1",
       lifecycleStateHash,
       mergeGate: {
-        conclusion: hasFindings ? "failure" : allowPartial ? "neutral" : "success",
+        conclusion: hasFindings
+          ? "failure"
+          : allowPartial
+            ? "neutral"
+            : "success",
       },
-      occurrences: findings.map(finding => ({
+      occurrences: findings.map((finding) => ({
         lineageId: finding.normalizedFailureModeHash,
         state: "new",
         observationIds: [options.investigation!.observationId],
@@ -832,8 +857,10 @@ export class ReviewActionV2E2EHarness {
         summary: {
           allClear: !allowPartial && !hasFindings,
           body: hasFindings
-            ? `Investigation Findings\n${findings.map(finding => `${finding.title}: ${finding.message}`).join("\n")}`
-            : allowPartial ? "Partial review" : "Review complete",
+            ? `Investigation Findings\n${findings.map((finding) => `${finding.title}: ${finding.message}`).join("\n")}`
+            : allowPartial
+              ? "Partial review"
+              : "Review complete",
           marker: `<!-- ${flow.executionId}:summary -->`,
           occurrenceCounts: {
             new: findings.length,
