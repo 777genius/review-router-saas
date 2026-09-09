@@ -174,6 +174,7 @@ describe("read-only historical89 prerequisite capture", () => {
         "SET LOCAL statement_timeout = '4s'",
         "SET LOCAL lock_timeout = '1s'",
         "SET LOCAL idle_in_transaction_session_timeout = '5s'",
+        "SET LOCAL jit = off",
         "SET LOCAL search_path = pg_catalog, public",
         ...Object.keys(values),
         "ROLLBACK",
@@ -219,6 +220,17 @@ describe("read-only historical89 prerequisite capture", () => {
       expect(sql).toContain("'configurationDigest'");
     },
   );
+
+  it("rolls back a failed JIT setup before collecting any evidence", async () => {
+    const h = harness(fixture(), "SET LOCAL jit = off");
+    const result = await h.run();
+    expect(result.collection.timeouts).toBe("permission-denied");
+    expect(result.observations).toEqual({});
+    expect(result.collectionComplete).toBe(false);
+    expect(result.rollbackConfirmed).toBe(true);
+    expect(h.sequence.slice(-2)).toEqual(["SET LOCAL jit = off", "ROLLBACK"]);
+    expect(h.client.end).not.toHaveBeenCalled();
+  });
 
   it("binds digests to collected projections, with canonical object key order", async () => {
     const a = fixture();
@@ -364,17 +376,14 @@ describe("read-only historical89 prerequisite capture", () => {
         values.objectAcl.rows = [{ identity: "x".repeat(2_000_001) }];
       if (kind === "rows") values.objectAcl.rows = Array(20_001).fill({});
       const h = harness(values);
-      if (kind === "server")
-        h.client.query
-          .mockImplementationOnce(async () => ({ command: "BEGIN", rows: [] }))
-          .mockImplementationOnce(async () => ({ command: "SET", rows: [] }))
-          .mockImplementationOnce(async () => ({ command: "SET", rows: [] }))
-          .mockImplementationOnce(async () => ({ command: "SET", rows: [] }))
-          .mockImplementationOnce(async () => ({ command: "SET", rows: [] }))
-          .mockImplementationOnce(async () => ({
-            command: "SELECT",
-            rows: [{ value: null, exceeded: true }],
-          }));
+      if (kind === "server") {
+        const original = h.client.query.getMockImplementation()!;
+        h.client.query.mockImplementation(async (query) =>
+          query.text.startsWith("WITH capture")
+            ? { command: "SELECT", rows: [{ value: null, exceeded: true }] }
+            : original(query),
+        );
+      }
       const result = await h.run();
       expect(result.collectionComplete).toBe(false);
       expect(result.digests.objectAcl).toBeUndefined();

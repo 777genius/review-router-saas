@@ -33,6 +33,7 @@ const setup = [
   "SET LOCAL statement_timeout = '4s'",
   "SET LOCAL lock_timeout = '1s'",
   "SET LOCAL idle_in_transaction_session_timeout = '5s'",
+  "SET LOCAL jit = off",
   "SET LOCAL search_path = pg_catalog, public",
 ];
 
@@ -165,9 +166,9 @@ test("real capture library publishes complete private evidence after closing; on
     );
   }
   assert.equal(h.closed(), 1);
-  assert.deepEqual(h.queries.slice(0, 5), setup);
+  assert.deepEqual(h.queries.slice(0, setup.length), setup);
   assert.equal(h.queries.at(-1), "ROLLBACK");
-  assert.equal(h.queries.length, 15);
+  assert.equal(h.queries.length, 16);
   const serialized = await readFile(h.output, "utf8");
   const evidence = JSON.parse(serialized);
   assert.equal(evidence.collectionComplete, true);

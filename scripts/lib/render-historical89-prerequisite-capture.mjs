@@ -211,6 +211,8 @@ export async function captureHistorical89Prerequisites({
     await query("SET LOCAL statement_timeout = '4s'");
     await query("SET LOCAL lock_timeout = '1s'");
     await query("SET LOCAL idle_in_transaction_session_timeout = '5s'");
+    // Avoid JIT compilation spending the bounded capture budget; rollback restores it.
+    await query("SET LOCAL jit = off");
     await query("SET LOCAL search_path = pg_catalog, public");
     const identity = await read("identity", identitySql);
     record("identity", identity);
