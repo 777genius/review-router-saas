@@ -256,6 +256,7 @@ describe("protocol v2 publication executor", () => {
     const fixture = await createFixture({
       operations: pendingReviewOperationPlans(),
     });
+    const proof = vi.spyOn(fixture.application, "proveNoEffect");
     fixture.gateway.pages = [
       {
         objects: [{ ...gatewayObject("review:7"), bodyHash: hash("9") }],
@@ -275,12 +276,19 @@ describe("protocol v2 publication executor", () => {
     );
     expect(fixture.gateway.compensationCalls).toBe(1);
     expect(fixture.gateway.applyCalls).toBe(0);
+    expect(proof).not.toHaveBeenCalled();
+    expect(await fixture.repository.findById("publication-1")).toMatchObject({
+      attempt: { terminalOutcome: null },
+      operationAttempts: [{ noEffectProofId: null }],
+      tombstones: [],
+    });
   });
 
   it("recovers cleanup ambiguity from persisted operation state after a worker retry", async () => {
     const fixture = await createFixture({
       operations: pendingReviewOperationPlans(),
     });
+    const proof = vi.spyOn(fixture.application, "proveNoEffect");
     fixture.gateway.pages = [
       {
         objects: [{ ...gatewayObject("review:7"), bodyHash: hash("9") }],
@@ -311,6 +319,12 @@ describe("protocol v2 publication executor", () => {
     );
     expect(fixture.gateway.compensationCalls).toBe(1);
     expect(fixture.gateway.applyCalls).toBe(0);
+    expect(proof).not.toHaveBeenCalled();
+    expect(await fixture.repository.findById("publication-1")).toMatchObject({
+      attempt: { terminalOutcome: null },
+      operationAttempts: [{ noEffectProofId: null }],
+      tombstones: [],
+    });
   });
 
   it("does not report no-effect when credential freshness changes after a persisted mutation attempt", async () => {
@@ -504,27 +518,158 @@ describe("protocol v2 publication executor", () => {
     expect(fixture.gateway.applyCalls).toBe(0);
   });
 
-  it("rechecks the effect gate immediately before the SCM mutation", async () => {
+  it("persists no-effect proof when the initial effect gate is disabled and restores terminal retries", async () => {
     const fixture = await createFixture();
     fixture.effectGate.decision =
       ReviewV2PublicationEffectGateDecision.Disabled;
+    const proof = vi.spyOn(fixture.application, "proveNoEffect");
+    const terminalization = vi.spyOn(fixture.application, "terminalizeUnknown");
 
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Terminalized,
+        safeReason: "publication_effect_gate_disabled",
+        terminalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
+      },
+    );
+    const view = await fixture.repository.findById("publication-1");
+    expect(view).toMatchObject({
+      attempt: { state: "terminal", terminalOutcome: "failed_no_effect" },
+      operationAttempts: [
+        {
+          state: "no_effect_proven",
+          noEffectProofId: expect.any(String),
+          noEffectProofHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          noEffectReason:
+            "definitely_no_effect:publication_effect_gate_disabled",
+          noEffectProvenAt: initialTime,
+        },
+      ],
+      effects: [],
+      tombstones: [
+        {
+          finalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
+          finalReason: "publication_effect_gate_disabled",
+          lastErrorCode: "publication_effect_gate_disabled",
+        },
+      ],
+    });
+    expect(proof).toHaveBeenCalledTimes(1);
+    expect(terminalization).toHaveBeenCalledTimes(1);
+    expect(proof.mock.invocationCallOrder[0]).toBeLessThan(
+      terminalization.mock.invocationCallOrder[0]!,
+    );
+
+    fixture.effectGate.decision = ReviewV2PublicationEffectGateDecision.Allowed;
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Terminalized,
+        safeReason: "publication_failed_no_effect",
+        terminalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
+      },
+    );
+    expect(await fixture.repository.findById("publication-1")).toEqual(view);
+    expect(proof).toHaveBeenCalledTimes(1);
+    expect(terminalization).toHaveBeenCalledTimes(1);
+    expect(fixture.effectGate.calls).toBe(1);
+    expect(fixture.gateway.applyCalls).toBe(0);
+    expect(fixture.gateway.compensationCalls).toBe(0);
+  });
+
+  it("replays durable disabled-gate proof after terminalization fails without reopening SCM", async () => {
+    const fixture = await createFixture({ claimDurationMs: 1_000 });
+    fixture.effectGate.decision =
+      ReviewV2PublicationEffectGateDecision.Disabled;
+    const proof = vi.spyOn(fixture.application, "proveNoEffect");
+    const terminalization = vi
+      .spyOn(fixture.application, "terminalizeUnknown")
+      .mockRejectedValueOnce(new Error("terminalization_unavailable"));
+
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Retryable,
+        safeReason: "publication_terminal_outcome_ack_unknown",
+      },
+    );
+    const beforeRetry = await fixture.repository.findById("publication-1");
+    expect(beforeRetry).toMatchObject({
+      attempt: { terminalOutcome: null },
+      operationAttempts: [
+        {
+          state: "no_effect_proven",
+          noEffectReason:
+            "definitely_no_effect:publication_effect_gate_disabled",
+        },
+      ],
+      effects: [],
+      tombstones: [],
+    });
+    const credentialsBeforeRetry = [...fixture.credentials.purposes];
+    fixture.clock.set(at("2026-07-23T12:00:02.000Z"));
+    fixture.effectGate.decision = ReviewV2PublicationEffectGateDecision.Allowed;
+    fixture.freshness.current = changedFreshness();
+
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Terminalized,
+        safeReason: "scm_mutation_rejected_no_effect",
+        terminalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
+      },
+    );
+    const afterRetry = await fixture.repository.findById("publication-1");
+    expect(afterRetry?.operationAttempts).toEqual(
+      beforeRetry?.operationAttempts,
+    );
+    expect(afterRetry).toMatchObject({
+      attempt: { state: "terminal", terminalOutcome: "failed_no_effect" },
+      effects: [],
+      tombstones: [{ lastErrorCode: "publication_effect_gate_disabled" }],
+    });
+    expect(proof).toHaveBeenCalledTimes(1);
+    expect(terminalization).toHaveBeenCalledTimes(2);
+    expect(fixture.credentials.purposes).toEqual(credentialsBeforeRetry);
+    expect(fixture.effectGate.calls).toBe(1);
+    expect(fixture.gateway.applyCalls).toBe(0);
+    expect(fixture.gateway.compensationCalls).toBe(0);
+  });
+
+  it("preserves prior mutation ambiguity when the effect gate becomes disabled", async () => {
+    const fixture = await createFixture();
+    fixture.gateway.applyError = new ReviewV2ScmMutationError(
+      "scm_timeout",
+      ReviewV2ScmMutationFailureOutcome.EffectMayExist,
+      true,
+    );
+    const proof = vi.spyOn(fixture.application, "proveNoEffect");
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Retryable,
+        safeReason: "scm_timeout",
+      },
+    );
+    fixture.gateway.applyError = null;
+    fixture.effectGate.decision =
+      ReviewV2PublicationEffectGateDecision.Disabled;
     await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
       {
         status: ReviewV2PublicationExecutionStatus.Retryable,
         safeReason: "publication_effect_gate_disabled",
       },
     );
-    expect(fixture.effectGate.calls).toBe(1);
-    expect(fixture.gateway.applyCalls).toBe(0);
-    expect(
-      (await fixture.repository.findById("publication-1"))?.attempt
-        .terminalOutcome,
-    ).toBeNull();
+    expect(proof).not.toHaveBeenCalled();
+    expect(await fixture.repository.findById("publication-1")).toMatchObject({
+      attempt: { terminalOutcome: null },
+      operationAttempts: [{ noEffectProofId: null }],
+      tombstones: [],
+    });
+    expect(fixture.effectGate.calls).toBe(2);
+    expect(fixture.gateway.applyCalls).toBe(1);
+    expect(fixture.gateway.compensationCalls).toBe(0);
   });
 
   it("fails closed without retrying internally when the effect gate is unavailable", async () => {
     const unavailable = await createFixture();
+    const unavailableProof = vi.spyOn(unavailable.application, "proveNoEffect");
     unavailable.effectGate.decision =
       ReviewV2PublicationEffectGateDecision.Unavailable;
 
@@ -538,6 +683,7 @@ describe("protocol v2 publication executor", () => {
     expect(unavailable.gateway.applyCalls).toBe(0);
 
     const rejected = await createFixture();
+    const rejectedProof = vi.spyOn(rejected.application, "proveNoEffect");
     rejected.effectGate.error = new Error("rollout_store_unavailable");
     await expect(
       rejected.executor.execute(executionCommand()),
@@ -547,6 +693,26 @@ describe("protocol v2 publication executor", () => {
     });
     expect(rejected.effectGate.calls).toBe(1);
     expect(rejected.gateway.applyCalls).toBe(0);
+    expect(unavailableProof).not.toHaveBeenCalled();
+    expect(rejectedProof).not.toHaveBeenCalled();
+    for (const fixture of [unavailable, rejected]) {
+      expect(fixture.gateway.compensationCalls).toBe(0);
+      expect(await fixture.repository.findById("publication-1")).toMatchObject({
+        attempt: { terminalOutcome: null },
+        operationAttempts: [{ noEffectProofId: null }],
+        effects: [],
+        tombstones: [],
+      });
+      fixture.effectGate.decision =
+        ReviewV2PublicationEffectGateDecision.Allowed;
+      fixture.effectGate.error = null;
+      await expect(
+        fixture.executor.execute(executionCommand()),
+      ).resolves.toMatchObject({
+        status: ReviewV2PublicationExecutionStatus.Completed,
+      });
+      expect(fixture.gateway.applyCalls).toBe(1);
+    }
   });
 
   it("re-reads the effect gate immediately before duplicate cleanup", async () => {

@@ -241,10 +241,31 @@ export function composePrismaReviewInvestigationTerminalTelemetry(input: {
     input.samples ??
     new StoredReviewInvestigationTerminalTelemetrySamples(
       input.investigations ?? new PrismaInvestigationStore(input.prisma),
-      input.sources ??
-        new FixedReviewInvestigationTerminalTelemetrySource(
-          input.source ?? InvestigationTelemetrySource.Shadow,
-        ),
+      {
+        async resolveSource(investigation) {
+          // Source describes the first recorded terminal observation. A later
+          // rollout change must not reclassify that immutable sample on replay.
+          // Rebuild the remaining payload so append still detects conflicts.
+          const existing =
+            await input.prisma.reviewInvestigationTelemetrySample.findUnique({
+              where: {
+                sampleId: `terminal-${investigation.certificate!.certificateHash}`,
+              },
+              select: { source: true },
+            });
+          if (existing) {
+            const source = existing.source as InvestigationTelemetrySource;
+            assertTerminalTelemetrySource(source);
+            return source;
+          }
+          return (
+            input.sources ??
+            new FixedReviewInvestigationTerminalTelemetrySource(
+              input.source ?? InvestigationTelemetrySource.Shadow,
+            )
+          ).resolveSource(investigation);
+        },
+      },
     );
   return new ProductionReviewInvestigationTerminalTelemetry(
     samples,
