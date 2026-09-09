@@ -131,7 +131,7 @@ async function harness(t, failure) {
         /\b(INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP|TRUNCATE|GRANT|REVOKE|CALL|DO|COMMIT|COPY)\b/i,
       );
       if (failure === "query" && index === 4) throw new Error(secret);
-      const value = structuredClone(values[index++]);
+      const value = globalThis.structuredClone(values[index++]);
       if (failure === "identity" && index === 1) value.databaseOid = "99999";
       if (failure === "missing" && index === 6) return { rows: [] };
       return { rows: [{ value, exceeded: failure === "cap" && index === 6 }] };
