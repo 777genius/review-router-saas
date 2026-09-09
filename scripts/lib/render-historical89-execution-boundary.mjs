@@ -446,7 +446,7 @@ export function assertHistorical89ExecutionPreconditions(input) {
       typeof service.serviceId !== "string" ||
       !/^srv-[a-z0-9]+$/u.test(service.serviceId) ||
       service.autoDeploy !== "no" ||
-      typeof service.suspended !== "string" ||
+      service.suspended !== "suspended" ||
       serviceIds.has(service.serviceId)
     )
       fail("automation_service");
@@ -468,6 +468,12 @@ export function assertHistorical89ExecutionPreconditions(input) {
     !instant(fence.establishedAt)
   )
     fail("fence_not_durable");
+  if (
+    fence.scope.length !== serviceIds.size ||
+    new Set(fence.scope).size !== serviceIds.size ||
+    fence.scope.some((serviceId) => !serviceIds.has(serviceId))
+  )
+    fail("fence_scope_mismatch");
   return Object.freeze({
     digest: renderManagedEvidenceDigest(input),
     externalFenceSha256: fence.externalFenceSha256,

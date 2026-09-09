@@ -120,10 +120,16 @@ export function authorizeHistorical89InPlaceOperation({
   defaultAcl,
   creatorEvidence,
   terminalCatalogProvenance,
+  ...observations
 }) {
   const blockedBy = [];
   try {
-    qualifyHistorical89Admission({ admission, defaultAcl, creatorEvidence });
+    qualifyHistorical89Admission({
+      admission,
+      defaultAcl,
+      creatorEvidence,
+      ...observations,
+    });
   } catch (error) {
     const reason = String(error?.message ?? "unknown")
       .split(":")
@@ -134,12 +140,11 @@ export function authorizeHistorical89InPlaceOperation({
     blockedBy.push(
       `terminal_catalog_provenance:${String(terminalCatalogProvenance)}`,
     );
-  // Custody bootstrapped by the database owner binds and fences one operation.
-  // It does not turn owner access into an independent approval.
-  blockedBy.push("operation_custody:owner_bootstrapped_not_independent");
+  // Owner custody alone is insufficient; successful source qualification and
+  // same-contract terminal comparison supply the independent approval root.
   return Object.freeze({
     kind: phase.kind,
-    authorizesProductionMutation: false,
+    authorizesProductionMutation: blockedBy.length === 0,
     blockedBy: Object.freeze([...new Set(blockedBy)].sort()),
   });
 }
@@ -276,6 +281,11 @@ export function planHistorical89InPlaceOperation(input) {
       defaultAcl,
       creatorEvidence,
       terminalCatalogProvenance,
+      ledger,
+      originalMembership,
+      baselineCatalog,
+      reviewedTerminalCatalog,
+      reviewedTerminalCatalogDigest,
     }),
   });
 }

@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
 import { renderManagedEvidenceDigest } from "./render-schema-handoff-policy.mjs";
 import { assertHistorical89InPlaceAclDelta } from "./render-historical89-inplace-transaction.mjs";
-import { renderHistorical89PendingDigest } from "./render-historical89-admission.mjs";
+import {
+  compareHistorical89ReviewedContract,
+  qualifyHistorical89Admission,
+  renderHistorical89PendingDigest,
+} from "./render-historical89-admission.mjs";
 import { describe, expect, it } from "vitest";
 import {
   authorizeHistorical89InPlaceOperation,
@@ -88,9 +92,7 @@ describe("historical89 in-place operation", () => {
       terminalCatalogProvenance: "reviewed-registry",
     } as never);
     expect(authorization.authorizesProductionMutation).toBe(false);
-    expect(authorization.blockedBy).toContain(
-      "operation_custody:owner_bootstrapped_not_independent",
-    );
+
     expect(
       authorization.blockedBy.some((reason) =>
         reason.startsWith("admission_qualification:"),
@@ -543,6 +545,229 @@ describe("operation observation bindings", () => {
     reviewedTerminalCatalog: baselineCatalog,
     reviewedTerminalCatalogDigest: renderManagedEvidenceDigest(baselineCatalog),
     terminalCatalogProvenance: "disposable-rehearsal",
+  });
+
+  // Synthetic only: an independent fixture expectation stays fixed while each
+  // observation changes. Nothing registers this contract in production source.
+  const syntheticContract = () => {
+    const stable = { ...admission() } as Record<string, unknown>;
+    for (const key of [
+      "operationId",
+      "providerEffectIds",
+      "qualifiedAt",
+      "recoveryIdentitySha256",
+      "externalFenceSha256",
+      "custodyDigest",
+      "gateStatus",
+    ])
+      delete stable[key];
+    return {
+      kind: phase.kind,
+      version: 1,
+      comparisonPoint: "post-preparation-before-migration/v1",
+      identity: stable,
+      creatorEvidence: creatorEvidence(),
+      terminalCatalog: structuredClone(baselineCatalog),
+      terminalCatalogDigest: renderManagedEvidenceDigest(baselineCatalog),
+    };
+  };
+
+  it("compares a complete synthetic contract without granting source qualification", () => {
+    expect(
+      compareHistorical89ReviewedContract(syntheticContract(), planInput()),
+    ).toBe(true);
+    const supplied = planInput();
+    const {
+      admission,
+      defaultAcl,
+      creatorEvidence,
+      ledger,
+      originalMembership,
+      baselineCatalog,
+      reviewedTerminalCatalog,
+      reviewedTerminalCatalogDigest,
+    } = supplied;
+    const observations = {
+      admission,
+      defaultAcl,
+      creatorEvidence,
+      ledger,
+      originalMembership,
+      baselineCatalog,
+      reviewedTerminalCatalog,
+      reviewedTerminalCatalogDigest,
+    };
+    expect(() => qualifyHistorical89Admission(observations)).toThrow(
+      "independent_review_missing",
+    );
+    expect(() =>
+      qualifyHistorical89Admission({
+        ...observations,
+        reviewedExpectations: syntheticContract(),
+      }),
+    ).toThrow("caller_supplied_expectations");
+    expect(
+      authorizeHistorical89InPlaceOperation({
+        ...observations,
+        terminalCatalogProvenance: "reviewed-registry",
+      }),
+    ).toMatchObject({
+      authorizesProductionMutation: false,
+      blockedBy: ["admission_qualification:independent_review_missing"],
+    });
+  });
+
+  it.each(Object.keys(syntheticContract().identity))(
+    "rejects mismatched stable %s",
+    (key) => {
+      const supplied = planInput();
+      const identity = supplied.admission as Record<string, unknown>;
+      identity[key] = String(identity[key]).startsWith("sha256:")
+        ? digest(99)
+        : key === "sourceTree"
+          ? "c".repeat(40)
+          : String(identity[key]) + "0";
+      expect(() =>
+        compareHistorical89ReviewedContract(syntheticContract(), supplied),
+      ).toThrow();
+    },
+  );
+
+  it.each([
+    "ledger",
+    "originalMembership",
+    "baselineCatalog",
+    "defaultAcl",
+    "creatorEvidence",
+  ])("rejects changed actual %s with unchanged asserted digest", (key) => {
+    const supplied = planInput() as Record<string, any>;
+    supplied[key] = structuredClone(supplied[key]);
+    if (key === "ledger")
+      supplied.ledger[0].id = "00000000-0000-0000-0000-999999999999";
+    else if (key === "creatorEvidence")
+      supplied.creatorEvidence.dynamicDdl = [];
+    else supplied[key].unexpected = true;
+    expect(() =>
+      compareHistorical89ReviewedContract(syntheticContract(), supplied),
+    ).toThrow();
+  });
+
+  it.each([
+    "sessionUser",
+    "currentUser",
+    "creatingRoles",
+    "roleSettings",
+    "securityDefiners",
+    "dynamicDdl",
+    "triggerCreators",
+  ])("compares complete creator %s", (key) => {
+    const supplied = planInput();
+    const evidence = supplied.creatorEvidence as Record<string, unknown>;
+    evidence[key] = key.endsWith("User")
+      ? "other"
+      : key === "creatingRoles"
+        ? ["reviewrouter", "reviewrouter"]
+        : key === "roleSettings"
+          ? [{ role: "other", setting: "search_path", value: "public" }]
+          : [
+              {
+                identity: "different reviewed path",
+                effectiveRole: "reviewrouter",
+                createsObjects: false,
+              },
+            ];
+    expect(() =>
+      compareHistorical89ReviewedContract(syntheticContract(), supplied),
+    ).toThrow();
+  });
+
+  it("rejects a self-consistent unreviewed catalog and terminal", () => {
+    for (const terminal of [false, true]) {
+      const supplied = planInput();
+      const changed = {
+        ...baselineCatalog,
+        facts: [...baselineCatalog.facts, { family: "unreviewed", fact: {} }],
+      };
+      if (terminal) {
+        supplied.reviewedTerminalCatalog = changed as typeof baselineCatalog;
+        supplied.reviewedTerminalCatalogDigest =
+          renderManagedEvidenceDigest(changed);
+      } else {
+        supplied.baselineCatalog = changed as typeof baselineCatalog;
+        supplied.admission.catalogDigest = renderManagedEvidenceDigest(changed);
+      }
+      expect(() =>
+        compareHistorical89ReviewedContract(syntheticContract(), supplied),
+      ).toThrow();
+    }
+  });
+
+  it.each([undefined, null, {}, { version: 1, facts: [] }])(
+    "rejects missing/malformed terminal %j",
+    (value) => {
+      expect(() =>
+        compareHistorical89ReviewedContract(syntheticContract(), {
+          ...planInput(),
+          reviewedTerminalCatalog: value,
+        }),
+      ).toThrow();
+    },
+  );
+
+  it.each([undefined, "", digest(9)])(
+    "rejects missing/mismatched terminal digest %s",
+    (value) => {
+      expect(() =>
+        compareHistorical89ReviewedContract(syntheticContract(), {
+          ...planInput(),
+          reviewedTerminalCatalogDigest: value,
+        }),
+      ).toThrow();
+    },
+  );
+
+  it.each([
+    "kind",
+    "version",
+    "comparisonPoint",
+    "identity",
+    "creatorEvidence",
+    "terminalCatalog",
+    "terminalCatalogDigest",
+  ])("requires contract %s", (key) => {
+    const contract = syntheticContract() as Record<string, unknown>;
+    delete contract[key];
+    expect(() =>
+      compareHistorical89ReviewedContract(contract, planInput()),
+    ).toThrow();
+  });
+
+  it("does not treat operation-specific coordinates as stable approval", () => {
+    const supplied = planInput();
+    supplied.admission.operationId = "99999999-abcd-abcd-abcd-123456789abc";
+    supplied.admission.providerEffectIds = ["other-effect"];
+    supplied.admission.qualifiedAt = "2026-09-08T00:00:00.000Z";
+    supplied.admission.recoveryIdentitySha256 = digest(88);
+    supplied.admission.externalFenceSha256 = digest(88);
+    supplied.admission.custodyDigest = digest(88);
+    expect(
+      compareHistorical89ReviewedContract(syntheticContract(), supplied),
+    ).toBe(true);
+    // The planner still rejects these unbound recovery/fence/gate observations.
+    expect(() => planHistorical89InPlaceOperation(supplied)).toThrow();
+  });
+
+  it.each([
+    { version: 2 },
+    { comparisonPoint: "pre-preparation/v1" },
+    { unexpected: true },
+  ])("rejects a changed contract schema %j", (change) => {
+    expect(() =>
+      compareHistorical89ReviewedContract(
+        { ...syntheticContract(), ...change },
+        planInput(),
+      ),
+    ).toThrow();
   });
 
   it("binds the complete original CONNECT observation and preserves its grantor", () => {

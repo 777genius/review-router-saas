@@ -1,7 +1,9 @@
 import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
+import { assertRenderManagedCatalogMatches } from "./render-managed-catalog.mjs";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
+  inspectRenderManagedLedgerRows,
   renderManagedEvidenceDigest,
   renderSchemaHandoffMigrationContract,
 } from "./render-schema-handoff-policy.mjs";
@@ -708,14 +710,164 @@ export function readReviewedHistorical89Contract(kind = phase.kind) {
   const bytes = readFileSync(new URL(review.path, import.meta.url));
   if (`sha256:${sha256(bytes)}` !== review.digest) fail("review_bytes");
   const contract = JSON.parse(bytes.toString("utf8"));
+  assertReviewedHistorical89Contract(contract);
+  return contract;
+}
+
+// Only stable approval fields belong here. Recovery, fence, operation IDs,
+// provider effects, times, gate revisions and permit coordinates remain bound
+// by the execution/custody validators, never by baseline approval.
+const reviewedIdentityFields = Object.freeze([
+  "providerDatabaseResourceId",
+  "systemIdentifier",
+  "databaseOid",
+  "databaseName",
+  "handoffSourceCommit",
+  "cutoverSourceCommit",
+  "sourceTree",
+  "pendingEntriesSha256",
+  "authorizedBinaryArtifactDigest",
+  "baselineManifest",
+  "targetManifest",
+  "originalLedgerDigest",
+  "catalogDigest",
+  "topologyDigest",
+  "ownershipDigest",
+  "aclDigest",
+  "membershipDigest",
+]);
+const contractShape = shapeOf([
+  "kind",
+  "version",
+  "comparisonPoint",
+  "identity",
+  "creatorEvidence",
+  "terminalCatalog",
+  "terminalCatalogDigest",
+]);
+
+// The plan's baselineCatalog is AFTER accepted preparation/custody installation
+// and admission restriction, BEFORE any migration body. It is not the original
+// pre-preparation capture. Review must explicitly approve this catalog (including
+// preparation's catalog changes); substituting the earlier capture must reject.
+// Authenticating the pre-preparation capture and its transition into this point
+// remains the preparation integration's job; no digest here proves that history.
+function assertReviewedHistorical89Contract(contract) {
   if (
-    contract.kind !== kind ||
+    keysOf(contract) !== contractShape ||
+    contract.kind !== phase.kind ||
     contract.version !== 1 ||
-    contract.handoffSourceCommit !== phase.handoffSourceCommit ||
-    contract.cutoverSourceCommit !== phase.cutoverSourceCommit
+    contract.comparisonPoint !== "post-preparation-before-migration/v1" ||
+    keysOf(contract.identity) !== shapeOf(reviewedIdentityFields)
+  )
+    fail("review_shape");
+  const identity = contract.identity;
+  if (
+    identity.providerDatabaseResourceId !==
+      expectedProviderDatabaseResourceId ||
+    identity.databaseName !== expectedDatabaseName ||
+    !name(identity.systemIdentifier) ||
+    !positive(identity.systemIdentifier) ||
+    !name(identity.databaseOid) ||
+    !positive(identity.databaseOid) ||
+    identity.handoffSourceCommit !== phase.handoffSourceCommit ||
+    identity.cutoverSourceCommit !== phase.cutoverSourceCommit ||
+    !/^[a-f0-9]{40}$/u.test(identity.sourceTree) ||
+    identity.baselineManifest !== phase.baselineManifest ||
+    identity.targetManifest !== phase.targetManifest
   )
     fail("review_identity");
-  return contract;
+  for (const key of reviewedIdentityFields.filter(
+    (key) => key.endsWith("Digest") || key.endsWith("Sha256"),
+  ))
+    if (!digest(identity[key])) fail("review_identity");
+  assertHistorical89Creators(contract.creatorEvidence);
+  assertRenderManagedCatalogMatches(
+    contract.terminalCatalog,
+    contract.terminalCatalogDigest,
+  );
+  if (contract.terminalCatalog.database !== identity.databaseName)
+    fail("review_terminal_database");
+}
+
+/** Pure comparison, NOT source qualification or authorization. Synthetic tests
+ * may supply a contract here; production uses only readReviewed... above.
+ * Catalog comparison covers the complete catalog/authority projection, including
+ * topology and ownership facts. The separately supplied identity digests are
+ * also pinned, but are not substitutes for the actual catalog observation.
+ */
+export function compareHistorical89ReviewedContract(
+  contract,
+  {
+    admission,
+    ledger,
+    originalMembership,
+    baselineCatalog,
+    defaultAcl,
+    creatorEvidence,
+    reviewedTerminalCatalog,
+    reviewedTerminalCatalogDigest,
+  },
+) {
+  assertReviewedHistorical89Contract(contract);
+  assertHistorical89AdmissionIdentity(admission);
+  const creators = assertHistorical89Creators(creatorEvidence);
+  assertHistorical89ProviderDefaultAcl(defaultAcl, creators);
+  for (const key of reviewedIdentityFields)
+    if (admission[key] !== contract.identity[key])
+      fail(`review_mismatch_${key}`);
+  const history = inspectRenderManagedLedgerRows(
+    readRenderHistorical96CheckoutInventory(),
+    ledger,
+    phase,
+  );
+  if (
+    history.count !== phase.baselineCount ||
+    history.ledgerDigest !== contract.identity.originalLedgerDigest
+  )
+    fail("review_observation_originalLedgerDigest");
+  // Hash actual observations against independent expectations, not against
+  // their own newly asserted hashes. Complete rows are retained; the ledger
+  // uses the existing migration-name ordering.
+  for (const [key, observation, expected] of [
+    [
+      "membershipDigest",
+      originalMembership && [originalMembership],
+      contract.identity.membershipDigest,
+    ],
+    ["aclDigest", defaultAcl, contract.identity.aclDigest],
+    [
+      "creatorEvidence",
+      creatorEvidence,
+      renderManagedEvidenceDigest(contract.creatorEvidence),
+    ],
+  ]) {
+    if (
+      observation === undefined ||
+      observation === null ||
+      renderManagedEvidenceDigest(observation) !== expected
+    )
+      fail(`review_observation_${key}`);
+  }
+  assertRenderManagedCatalogMatches(
+    baselineCatalog,
+    contract.identity.catalogDigest,
+  );
+  if (baselineCatalog.database !== admission.databaseName)
+    fail("review_baseline_database");
+  // A provenance label alone is never terminal evidence. Both bytes (canonical
+  // projection) and digest must match this SAME independently loaded contract.
+  assertRenderManagedCatalogMatches(
+    reviewedTerminalCatalog,
+    reviewedTerminalCatalogDigest,
+  );
+  if (
+    reviewedTerminalCatalogDigest !== contract.terminalCatalogDigest ||
+    renderManagedEvidenceDigest(reviewedTerminalCatalog) !==
+      renderManagedEvidenceDigest(contract.terminalCatalog)
+  )
+    fail("review_terminal_mismatch");
+  return true;
 }
 
 /**
@@ -736,15 +888,32 @@ export function qualifyHistorical89Admission({
   defaultAcl,
   creatorEvidence,
   reviewedExpectations,
+  ledger,
+  originalMembership,
+  baselineCatalog,
+  reviewedTerminalCatalog,
+  reviewedTerminalCatalogDigest,
+  ...unsupported
 }) {
   // Refuse a caller-supplied expectation set outright rather than quietly
   // preferring source: accepting it at all would make the client the root.
-  if (reviewedExpectations !== undefined) fail("caller_supplied_expectations");
+  if (reviewedExpectations !== undefined || Object.keys(unsupported).length)
+    fail("caller_supplied_expectations");
   const identityDigest = assertHistorical89AdmissionIdentity(admission);
   const creators = assertHistorical89Creators(creatorEvidence);
   assertHistorical89ProviderDefaultAcl(defaultAcl, creators);
   // Fails closed today: no independently qualified registry exists yet.
   const contract = readReviewedHistorical89Contract();
+  compareHistorical89ReviewedContract(contract, {
+    admission,
+    ledger,
+    originalMembership,
+    baselineCatalog,
+    defaultAcl,
+    creatorEvidence,
+    reviewedTerminalCatalog,
+    reviewedTerminalCatalogDigest,
+  });
   return Object.freeze({
     kind: phase.kind,
     version: 1,
