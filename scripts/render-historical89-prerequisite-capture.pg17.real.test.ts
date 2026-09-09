@@ -188,27 +188,96 @@ const source = {
     }
   }, 60_000);
 
-  it("retains prior evidence after a real server timeout and restores JIT on rollback", async () => {
+  it("allows a deliberately delayed catalog above 4s and resets subsequent reads to 4s", async () => {
     const client = await connected();
     try {
       await client.query("SET jit = on");
+      await client.query("SET statement_timeout = '3s'");
       const pid = (await client.query("SELECT pg_backend_pid() AS pid")).rows[0]
         .pid;
       const query = client.query.bind(client);
-      let serverCode: string | undefined;
+      let elapsedMs = 0;
+      let afterCatalog = false;
+      let subsequentReads = 0;
       const queries = vi
         .spyOn(client, "query")
         .mockImplementation(async (config: any) => {
           if (config.text?.includes(projectionOf(renderManagedCatalogSql))) {
-            expect(config.query_timeout).toBe(5000);
+            expect(config.query_timeout).toBe(16_000);
+            expect((await query("SHOW statement_timeout")).rows).toEqual([
+              { statement_timeout: "15s" },
+            ]);
             expect((await query("SHOW jit")).rows).toEqual([{ jit: "off" }]);
+            const started = performance.now();
+            // Deliberate fixture delay in the same statement, not production performance evidence.
+            const response = await query({
+              ...config,
+              text: `WITH delayed AS MATERIALIZED (SELECT pg_sleep(4.2)) SELECT captured.* FROM delayed CROSS JOIN (${config.text}) captured`,
+            });
+            elapsedMs = performance.now() - started;
+            afterCatalog = true;
+            return response;
+          }
+          expect(config.query_timeout).toBe(5_000);
+          if (afterCatalog && config.text?.startsWith("WITH capture")) {
+            subsequentReads++;
             expect((await query("SHOW statement_timeout")).rows).toEqual([
               { statement_timeout: "4s" },
             ]);
+          }
+          return query(config);
+        });
+      const result = await captureHistorical89Prerequisites({
+        client,
+        expected,
+        source,
+        idleClient: true,
+      });
+      expect(result.collectionComplete, JSON.stringify(result.collection)).toBe(
+        true,
+      );
+      expect(result.rollbackConfirmed).toBe(true);
+      expect(result.authorizesProductionMutation).toBe(false);
+      expect(result.observations.catalog.facts.length).toBeGreaterThan(0);
+      expect(elapsedMs).toBeGreaterThan(4_000);
+      expect(elapsedMs).toBeLessThan(15_000);
+      expect(subsequentReads).toBe(3);
+      queries.mockRestore();
+      expect((await client.query("SHOW statement_timeout")).rows).toEqual([
+        { statement_timeout: "3s" },
+      ]);
+      expect((await client.query("SHOW jit")).rows).toEqual([{ jit: "on" }]);
+      await assertReusable(client, pid);
+    } finally {
+      await client.end();
+    }
+  }, 30_000);
+
+  it("retains prior evidence after a real server timeout and restores JIT on rollback", async () => {
+    const client = await connected();
+    try {
+      await client.query("SET jit = on");
+      await client.query("SET statement_timeout = '3s'");
+      const pid = (await client.query("SELECT pg_backend_pid() AS pid")).rows[0]
+        .pid;
+      const query = client.query.bind(client);
+      let serverCode: string | undefined;
+      let elapsedMs = 0;
+      const queries = vi
+        .spyOn(client, "query")
+        .mockImplementation(async (config: any) => {
+          if (config.text?.includes(projectionOf(renderManagedCatalogSql))) {
+            expect(config.query_timeout).toBe(16000);
+            expect((await query("SHOW jit")).rows).toEqual([{ jit: "off" }]);
+            expect((await query("SHOW statement_timeout")).rows).toEqual([
+              { statement_timeout: "15s" },
+            ]);
+            const started = performance.now();
             try {
               // Only this disposable fault injection replaces the catalog read.
-              return await query({ ...config, text: "SELECT pg_sleep(10)" });
+              return await query({ ...config, text: "SELECT pg_sleep(20)" });
             } catch (error: any) {
+              elapsedMs = performance.now() - started;
               serverCode = error.code;
               throw error;
             }
@@ -221,7 +290,10 @@ const source = {
         source,
         idleClient: true,
       });
+      expect(result.authorizesProductionMutation).toBe(false);
       expect(serverCode).toBe("57014");
+      expect(elapsedMs).toBeGreaterThanOrEqual(14_900);
+      expect(elapsedMs).toBeLessThan(16_000);
       for (const stage of [
         "identity",
         "cluster",
@@ -242,6 +314,9 @@ const source = {
         queries.mock.calls.filter(([q]) => q.text?.startsWith("WITH capture")),
       ).toHaveLength(6);
       queries.mockRestore();
+      expect((await client.query("SHOW statement_timeout")).rows).toEqual([
+        { statement_timeout: "3s" },
+      ]);
       expect((await client.query("SHOW jit")).rows).toEqual([{ jit: "on" }]);
       await assertReusable(client, pid);
     } finally {

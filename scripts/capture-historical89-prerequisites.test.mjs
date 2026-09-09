@@ -111,12 +111,19 @@ async function harness(t, failure) {
     },
     async query({ text, query_timeout }) {
       queries.push(text);
-      assert.equal(query_timeout, 5000);
+      assert.equal(
+        query_timeout,
+        text.startsWith("WITH capture") && index === 5 ? 16000 : 5000,
+      );
       if (text === "ROLLBACK") {
         if (failure === "rollback") throw new Error(secret);
         return { command: "ROLLBACK", rows: [] };
       }
-      if (setup.includes(text)) return { rows: [] };
+      if (
+        setup.includes(text) ||
+        text === "SET LOCAL statement_timeout = '15s'"
+      )
+        return { rows: [] };
       assert.match(
         text,
         /^WITH capture\(value\) AS MATERIALIZED \((?:SELECT|WITH) /,
@@ -132,6 +139,8 @@ async function harness(t, failure) {
         /\b(INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP|TRUNCATE|GRANT|REVOKE|CALL|DO|COMMIT|COPY)\b/i,
       );
       if (failure === "query" && index === 4) throw new Error(secret);
+      if (failure === "catalog-timeout" && index === 5)
+        throw Object.assign(new Error(secret), { code: "57014" });
       const value = globalThis.structuredClone(values[index++]);
       if (failure === "identity" && index === 1) value.databaseOid = "99999";
       if (failure === "missing" && index === 6) return { rows: [] };
@@ -168,7 +177,7 @@ test("real capture library publishes complete private evidence after closing; on
   assert.equal(h.closed(), 1);
   assert.deepEqual(h.queries.slice(0, setup.length), setup);
   assert.equal(h.queries.at(-1), "ROLLBACK");
-  assert.equal(h.queries.length, 16);
+  assert.equal(h.queries.length, 18);
   const serialized = await readFile(h.output, "utf8");
   const evidence = JSON.parse(serialized);
   assert.equal(evidence.collectionComplete, true);
@@ -189,6 +198,7 @@ test("real capture library publishes complete private evidence after closing; on
 for (const failure of [
   "connect",
   "query",
+  "catalog-timeout",
   "identity",
   "missing",
   "cap",
@@ -215,6 +225,21 @@ test("publication failure preserves existing output and removes staging files", 
   });
   assert.equal(h.closed(), 1);
   assert.equal(await readFile(h.output, "utf8"), "existing-evidence");
+  assert.deepEqual((await readdir(h.directory)).sort(), [
+    "evidence.json",
+    "request.json",
+  ]);
+});
+
+test("catalog timeout preserves previously published evidence", async (t) => {
+  const h = await harness(t, "catalog-timeout");
+  await writeFile(h.output, "prior-evidence");
+  await assert.rejects(h.run(), {
+    message: "historical89_prerequisites:failed",
+  });
+  assert.equal(h.closed(), 1);
+  assert.equal(h.queries.at(-1), "ROLLBACK");
+  assert.equal(await readFile(h.output, "utf8"), "prior-evidence");
   assert.deepEqual((await readdir(h.directory)).sort(), [
     "evidence.json",
     "request.json",
