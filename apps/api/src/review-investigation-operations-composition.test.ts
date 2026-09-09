@@ -441,7 +441,8 @@ describe("review investigation operations production composition", () => {
     });
     const firstWrite =
       prisma.reviewInvestigationTelemetrySample.create.mock.calls[0]?.[0];
-    prisma.reviewInvestigationTelemetrySample.findUnique.mockResolvedValueOnce({
+    prisma.reviewInvestigationTelemetrySample.findUnique.mockResolvedValue({
+      source: InvestigationTelemetrySource.Shadow,
       payloadHash: firstWrite?.data.payloadHash,
     });
     await terminal.recordConcluded({
@@ -453,6 +454,52 @@ describe("review investigation operations production composition", () => {
       prisma.reviewInvestigationTelemetrySample.create,
     ).toHaveBeenCalledOnce();
     expect(diagnostics.record).not.toHaveBeenCalled();
+  });
+
+  it("preserves the recorded source across disabled terminal retries and still rejects payload conflicts", async () => {
+    const prisma = fakePrisma();
+    const diagnostics = { record: vi.fn() };
+    const investigation = terminalInvestigation();
+    const investigations = { findById: vi.fn().mockResolvedValue(investigation) };
+    const sources = {
+      resolveSource: vi
+        .fn()
+        .mockResolvedValue(InvestigationTelemetrySource.Allowlisted),
+    };
+    const compose = () =>
+      composePrismaReviewInvestigationTerminalTelemetry({
+        prisma: prisma as unknown as PrismaClient,
+        investigations,
+        sources,
+        diagnostics,
+      });
+    const input = { investigationId: investigation.investigationId };
+    await compose().recordConcluded(input);
+    const firstWrite =
+      prisma.reviewInvestigationTelemetrySample.create.mock.calls[0]?.[0];
+    expect(firstWrite?.data.source).toBe(InvestigationTelemetrySource.Allowlisted);
+    prisma.reviewInvestigationTelemetrySample.findUnique.mockResolvedValue({
+      source: firstWrite?.data.source,
+      payloadHash: firstWrite?.data.payloadHash,
+    });
+    // Production's rollout resolver returns Shadow once emergency-disabled.
+    sources.resolveSource.mockResolvedValue(InvestigationTelemetrySource.Shadow);
+    await compose().recordConcluded(input);
+    await compose().recordConcluded(input);
+    expect(sources.resolveSource).toHaveBeenCalledOnce();
+    expect(prisma.reviewInvestigationTelemetrySample.create).toHaveBeenCalledOnce();
+    expect(diagnostics.record).not.toHaveBeenCalled();
+
+    investigations.findById.mockResolvedValue({
+      ...investigation,
+      totalDurationMs: 2_000,
+    });
+    await compose().recordConcluded(input);
+    expect(diagnostics.record).toHaveBeenCalledOnce();
+    expect(diagnostics.record).toHaveBeenCalledWith(
+      ReviewInvestigationOperationsDiagnosticCode.TerminalTelemetryRecordFailed,
+    );
+    expect(prisma.reviewInvestigationTelemetrySample.create).toHaveBeenCalledOnce();
   });
 });
 
