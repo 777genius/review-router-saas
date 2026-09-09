@@ -27,6 +27,7 @@ import {
   createReviewInvestigationProductionE2EHarness,
   resetReviewInvestigationProductionE2EDatabase,
   type ReviewInvestigationProductionE2EHarness,
+  type ReviewInvestigationProductionE2EHarnessOptions,
 } from "./support/review-investigation-production-e2e-harness.js";
 
 const databaseUrl = process.env.REVIEW_ROUTER_TEST_DATABASE_URL;
@@ -45,10 +46,17 @@ describeWithDatabase.sequential(
 
     beforeEach(async () => {
       await resetReviewInvestigationProductionE2EDatabase(databaseUrl!);
+    });
+
+    async function createHarness(
+      options: ReviewInvestigationProductionE2EHarnessOptions = {},
+    ) {
       harness = await createReviewInvestigationProductionE2EHarness(
         databaseUrl!,
+        options,
       );
-    });
+      return harness;
+    }
 
     afterEach(async () => {
       await harness?.close();
@@ -65,7 +73,9 @@ describeWithDatabase.sequential(
       "conclusion",
     ] as const) {
       it(`denies investigation ${boundary} without stopping legacy review`, async () => {
-        const fixture = requiredHarness(harness);
+        const fixture = await createHarness({
+          investigationProductionEffects: true,
+        });
         let exercised = false;
         await fixture.runWithFinding({
           label: `disable-${boundary}`,
@@ -104,7 +114,9 @@ describeWithDatabase.sequential(
     }
 
     it("restores immutable Findings and matching committed/terminal retries while disabled", async () => {
-      const fixture = requiredHarness(harness);
+      const fixture = await createHarness({
+        investigationProductionEffects: true,
+      });
       const stages: string[] = [];
       await fixture.runWithFinding({
         label: "disabled-restore",
@@ -161,7 +173,9 @@ describeWithDatabase.sequential(
         "enabled",
       ] as const) {
         it(`${conclusion}: ${boundary} preserves investigation authority`, async () => {
-          const fixture = requiredHarness(harness);
+          const fixture = await createHarness({
+            investigationProductionEffects: true,
+          });
           const input = {
             label: `${conclusion}-${boundary}`,
             expandRelations: false,
@@ -327,7 +341,7 @@ describeWithDatabase.sequential(
     }
 
     it("survives restart, preserves record-only authority, and promotes only signed evaluated evidence", async () => {
-      const fixture = requiredHarness(harness);
+      const fixture = await createHarness();
       const shadow = await fixture.runVerifiedClean({
         label: "shadow",
         expandRelations: true,
@@ -458,7 +472,7 @@ describeWithDatabase.sequential(
     }, 120_000);
 
     it("persists attested finding evidence across restart and certificate acceptance", async () => {
-      const fixture = requiredHarness(harness);
+      const fixture = await createHarness();
       const flow = await fixture.runWithFinding({
         label: "finding-restart",
         expandRelations: false,
@@ -562,13 +576,6 @@ async function assertLegacyContinuity(
     ),
   ).toBe(true);
   expect(fixture.emergency.disabled).toBe(true);
-}
-
-function requiredHarness(
-  value: ReviewInvestigationProductionE2EHarness | null,
-): ReviewInvestigationProductionE2EHarness {
-  if (!value) throw new Error("review_investigation_e2e_harness_missing");
-  return value;
 }
 
 // Separate from the legacy suite's unconditional resets: assignment must be

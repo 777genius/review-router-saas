@@ -273,6 +273,11 @@ type InvestigationFlowInput = Readonly<{
   restartAfterFindingCommit?: boolean;
 }>;
 
+export type ReviewInvestigationProductionE2EHarnessOptions = Readonly<{
+  // Shadow recording remains the default; effect boundary cases opt in.
+  investigationProductionEffects?: boolean;
+}>;
+
 export class ReviewInvestigationProductionE2EHarness {
   readonly emergency: {
     disabled: boolean;
@@ -406,6 +411,7 @@ export class ReviewInvestigationProductionE2EHarness {
 
   static async create(
     databaseUrl: string,
+    options: ReviewInvestigationProductionE2EHarnessOptions = {},
   ): Promise<ReviewInvestigationProductionE2EHarness> {
     const policyHash = sha256(canonicalJson(productionInvestigationPolicy));
     const coverageProfileHash = sha256(
@@ -416,7 +422,8 @@ export class ReviewInvestigationProductionE2EHarness {
       reads: 0,
     };
     const base = await createReviewActionV2E2EHarness(databaseUrl, {
-      investigationProductionEffects: true,
+      investigationProductionEffects:
+        options.investigationProductionEffects === true,
       beforeFakeGitHubRead: async (request) => emergency.beforeRead?.(request),
       investigationEmergencyValue: () => {
         emergency.reads += 1;
@@ -1708,8 +1715,9 @@ export class ReviewInvestigationProductionE2EHarness {
 
 export async function createReviewInvestigationProductionE2EHarness(
   databaseUrl: string,
+  options: ReviewInvestigationProductionE2EHarnessOptions = {},
 ): Promise<ReviewInvestigationProductionE2EHarness> {
-  return ReviewInvestigationProductionE2EHarness.create(databaseUrl);
+  return ReviewInvestigationProductionE2EHarness.create(databaseUrl, options);
 }
 
 export async function resetReviewInvestigationProductionE2EDatabase(
