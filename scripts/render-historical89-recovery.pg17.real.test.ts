@@ -320,8 +320,9 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
           read(source, recoveryScopeSql),
         );
         if (databaseUtcSetting) {
+          // SHOW canonicalizes the value; the exact stored spelling is checked above.
           expect(f.target.query(database, "SHOW TimeZone", "postgres")).toBe(
-            "utc",
+            "UTC",
           );
           // The archive contains database properties, but the normal restore
           // omits them. --create emits them along with CREATE DATABASE.
@@ -476,15 +477,29 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
       ],
       [
         "duplicate/conflicting array",
-        `INSERT INTO pg_db_role_setting VALUES ((SELECT oid FROM pg_database WHERE datname='${database}'),0,ARRAY['TimeZone=utc','TimeZone=Europe/Paris']) ON CONFLICT (setdatabase,setrole) DO UPDATE SET setconfig=EXCLUDED.setconfig`,
+        // Seed the row in either UTC mode, then bypass ALTER's key deduplication
+        // only in this disposable catalog row. PG17 catalogs cannot use ON CONFLICT.
+        `BEGIN; SET LOCAL lock_timeout='5s'; SET LOCAL statement_timeout='15s'; ALTER DATABASE ${database} SET TimeZone TO 'utc'; UPDATE pg_db_role_setting SET setconfig=ARRAY['TimeZone=utc','TimeZone=Europe/Paris'] WHERE setdatabase=(SELECT oid FROM pg_database WHERE datname='${database}') AND setrole=0; COMMIT;`,
         `ALTER DATABASE ${database} RESET ALL`,
       ],
     ])(
       "rejects actual %s settings on source and empty target before mutation",
       async (_kind, sql, cleanup) => {
         const f = await fixture();
+        const assertMalformedArray = (
+          pg: ReturnType<typeof managedPg17Fixture>,
+        ) => {
+          if (_kind === "duplicate/conflicting array")
+            expect(
+              read(
+                pg,
+                `SELECT to_json(setconfig) FROM pg_db_role_setting WHERE setdatabase=(SELECT oid FROM pg_database WHERE datname='${database}') AND setrole=0`,
+              ),
+            ).toEqual(["TimeZone=utc", "TimeZone=Europe/Paris"]);
+        };
         try {
           f.target.query(database, sql, "postgres");
+          assertMalformedArray(f.target);
           const beforeRestore = restoreCalls;
           await expect(f.restore()).rejects.toThrow(
             "unsupported_scope_or_visibility",
@@ -497,8 +512,9 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
               "postgres",
             ),
           ).toBe("0");
-          source.query(database, sql, "postgres");
           try {
+            source.query(database, sql, "postgres");
+            assertMalformedArray(source);
             const beforeDump = dumpCalls;
             await expect(
               captureRecoveryArtifact({
