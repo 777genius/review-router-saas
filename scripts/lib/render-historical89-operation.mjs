@@ -109,7 +109,7 @@ export function renderHistorical89InPlacePreflightSql(binding, coordinates) {
  * Decide whether this plan may mutate production, by attempting the real
  * qualification instead of asserting a verdict.
  *
- * Today this always returns false and names why. Bootstrapped custody is a
+ * With the null source registry this returns false. Bootstrapped custody is a
  * boundary, not an approval: `reviewrouter` created it and can still administer
  * it, and owner access has never been independent approval evidence here. The
  * approval root stays the reviewed expectation registry in source, which is

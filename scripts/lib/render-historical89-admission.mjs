@@ -1,13 +1,16 @@
 import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
 import { assertRenderManagedCatalogMatches } from "./render-managed-catalog.mjs";
+import { renderHistorical89AdmissionPhase } from "./render-historical89-phase.mjs";
+import {
+  renderManagedOperationCustodyContract,
+  renderManagedOperationCustodyVerifySql,
+} from "./render-managed-operation-custody.mjs";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   inspectRenderManagedLedgerRows,
   renderManagedEvidenceDigest,
-  renderSchemaHandoffMigrationContract,
 } from "./render-schema-handoff-policy.mjs";
-import { renderManagedWorkflowCutoverPhase } from "./render-managed-workflow-cutover.mjs";
 
 // Qualification evidence only. Nothing in this module creates custody, opens a
 // gate, authorizes a mutation, connects to a database or registers a production
@@ -17,22 +20,7 @@ import { renderManagedWorkflowCutoverPhase } from "./render-managed-workflow-cut
 // 1-89, about the predecessor retained phase, or about past custody. It does
 // not install, adopt or weaken the retained ledger guard, which legitimately
 // keeps requiring the original custody this database never had.
-export const renderHistorical89AdmissionPhase = Object.freeze({
-  kind: "managed-historical89-in-place/v1",
-  // The seven bodies come from two separately reviewed lanes. Both identities
-  // are bound: restating only one would leave half the applied SQL unattributed.
-  handoffSourceCommit: renderSchemaHandoffMigrationContract.sourceCommit,
-  cutoverSourceCommit: renderManagedWorkflowCutoverPhase.sourceCommit,
-  baselineCount: 89,
-  interimCount: 92,
-  targetCount: 96,
-  atomic: true,
-  // 89 and 96 are the only durable endpoints. 92 is verified inside the same
-  // backend and transaction; it never becomes a durable checkpoint here.
-  baselineManifest: renderSchemaHandoffMigrationContract.baselineManifest,
-  interimManifest: renderSchemaHandoffMigrationContract.targetManifest,
-  targetManifest: renderManagedWorkflowCutoverPhase.targetManifest,
-});
+export { renderHistorical89AdmissionPhase };
 const phase = renderHistorical89AdmissionPhase;
 
 const fail = (reason) => {
@@ -714,9 +702,86 @@ export function readReviewedHistorical89Contract(kind = phase.kind) {
   return contract;
 }
 
+const reviewedCustodySourceDigest = sha256(
+  readFileSync(
+    new URL("./render-managed-operation-custody.mjs", import.meta.url),
+  ),
+);
+
+// The PG17 catalog contains pg_get_functiondef hashes, not routine bodies.
+// Derive those exact definitions from the existing custody verifier's source
+// and THIS admission binding. Never trust a supplied source/body digest. The
+// SQL preflight still performs the full custody/ACL/preparation attestation.
+export function historical89StableReviewedCatalog(catalog, admission) {
+  const binding = Object.fromEntries(
+    [
+      "operationId",
+      "systemIdentifier",
+      "databaseOid",
+      "databaseName",
+      "recoveryIdentitySha256",
+      "externalFenceSha256",
+    ].map((key) => [key, admission[key]]),
+  );
+  const verifier = renderManagedOperationCustodyVerifySql(binding);
+  const schema = renderManagedOperationCustodyContract.schema;
+  const expected = new Map();
+  for (const signature of renderManagedOperationCustodyContract.routines) {
+    const routine = signature.split("(")[0];
+    const block = verifier.split(`AND p.proname='${routine}'`)[1];
+    const args = block?.match(
+      /pg_get_function_identity_arguments\(p.oid\)='([^']+)'/u,
+    )?.[1];
+    const body = block?.split(`$${routine}_expected$`)[1];
+    if (!args || !body) fail("review_custody_source");
+    // pg_get_functiondef formatting for the pinned PG17 plpgsql signatures.
+    // A server/source formatting change fails closed; it requires new review.
+    const definition = `CREATE OR REPLACE FUNCTION ${schema}.${routine}(${args})
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'public'
+AS $function$${body}$function$
+`;
+    expected.set(`${schema}.${routine}(${args})`, {
+      observed: sha256(definition),
+      stable: sha256(
+        `source-verified:${reviewedCustodySourceDigest}:${routine}`,
+      ),
+    });
+  }
+  // Preserve every other fact, including custody ownership, ACL, dependencies,
+  // signatures and configuration. Only source-proven bound definition hashes
+  // change representation, and every expected routine must occur exactly once.
+  const seen = new Set();
+  const facts = [];
+  for (const row of catalog.facts) {
+    const definition =
+      row?.family === "routine" && expected.get(row.fact?.identity);
+    if (!definition) {
+      facts.push(row);
+      continue;
+    }
+    if (
+      seen.has(row.fact.identity) ||
+      row.fact.definitionDigest !== definition.observed
+    )
+      fail("review_custody_definition");
+    seen.add(row.fact.identity);
+    facts.push({
+      ...row,
+      fact: { ...row.fact, definitionDigest: definition.stable },
+    });
+  }
+  if (seen.size !== expected.size) fail("review_custody_missing");
+  return { ...catalog, facts };
+}
+
 // Only stable approval fields belong here. Recovery, fence, operation IDs,
 // provider effects, times, gate revisions and permit coordinates remain bound
-// by the execution/custody validators, never by baseline approval.
+// by the execution/custody validators, never by baseline approval. catalogDigest
+// here hashes the source-verified stable projection; admission.catalogDigest and
+// the permit's terminalCatalogDigest continue to hash the exact raw observations.
 const reviewedIdentityFields = Object.freeze([
   "providerDatabaseResourceId",
   "systemIdentifier",
@@ -746,18 +811,20 @@ const contractShape = shapeOf([
   "terminalCatalogDigest",
 ]);
 
-// The plan's baselineCatalog is AFTER accepted preparation/custody installation
-// and admission restriction, BEFORE any migration body. It is not the original
-// pre-preparation capture. Review must explicitly approve this catalog (including
-// preparation's catalog changes); substituting the earlier capture must reject.
-// Authenticating the pre-preparation capture and its transition into this point
-// remains the preparation integration's job; no digest here proves that history.
+// Compare AFTER accepted preparation and admission restriction, BEFORE migration.
+// The stable projection retains preparation's catalog/authority changes, while
+// operation-bound routine definitions are first proved against source and the
+// actual binding above. It is NOT the original pre-preparation capture. Review
+// of that original capture and authentication of its transition to this point
+// remain a preparation integration prerequisite; this comparison proves no past
+// custody. The terminal uses the same representation, while permits retain the
+// exact unmodified terminal catalog digest for this operation.
 function assertReviewedHistorical89Contract(contract) {
   if (
     keysOf(contract) !== contractShape ||
     contract.kind !== phase.kind ||
-    contract.version !== 1 ||
-    contract.comparisonPoint !== "post-preparation-before-migration/v1" ||
+    contract.version !== 2 ||
+    contract.comparisonPoint !== "post-preparation-source-verified/v2" ||
     keysOf(contract.identity) !== shapeOf(reviewedIdentityFields)
   )
     fail("review_shape");
@@ -814,7 +881,7 @@ export function compareHistorical89ReviewedContract(
   const creators = assertHistorical89Creators(creatorEvidence);
   assertHistorical89ProviderDefaultAcl(defaultAcl, creators);
   for (const key of reviewedIdentityFields)
-    if (admission[key] !== contract.identity[key])
+    if (key !== "catalogDigest" && admission[key] !== contract.identity[key])
       fail(`review_mismatch_${key}`);
   const history = inspectRenderManagedLedgerRows(
     readRenderHistorical96CheckoutInventory(),
@@ -849,8 +916,9 @@ export function compareHistorical89ReviewedContract(
     )
       fail(`review_observation_${key}`);
   }
+  assertRenderManagedCatalogMatches(baselineCatalog, admission.catalogDigest);
   assertRenderManagedCatalogMatches(
-    baselineCatalog,
+    historical89StableReviewedCatalog(baselineCatalog, admission),
     contract.identity.catalogDigest,
   );
   if (baselineCatalog.database !== admission.databaseName)
@@ -862,9 +930,9 @@ export function compareHistorical89ReviewedContract(
     reviewedTerminalCatalogDigest,
   );
   if (
-    reviewedTerminalCatalogDigest !== contract.terminalCatalogDigest ||
-    renderManagedEvidenceDigest(reviewedTerminalCatalog) !==
-      renderManagedEvidenceDigest(contract.terminalCatalog)
+    renderManagedEvidenceDigest(
+      historical89StableReviewedCatalog(reviewedTerminalCatalog, admission),
+    ) !== renderManagedEvidenceDigest(contract.terminalCatalog)
   )
     fail("review_terminal_mismatch");
   return true;

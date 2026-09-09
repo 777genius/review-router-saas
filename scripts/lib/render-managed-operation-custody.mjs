@@ -4,7 +4,7 @@ import {
   renderManagedCanonicalLockPredicate,
   renderManagedPrismaLockPredicate,
 } from "./render-retained-exclusion.mjs";
-import { renderHistorical89AdmissionPhase } from "./render-historical89-admission.mjs";
+import { renderHistorical89AdmissionPhase } from "./render-historical89-phase.mjs";
 
 // ---------------------------------------------------------------------------
 // Fresh current-operation custody, inside the SAME qualified database.

@@ -21,6 +21,7 @@ import { renderManagedCatalogSql } from "./lib/render-managed-catalog.mjs";
 import { renderManagedCoordinatorExclusionSql } from "./lib/render-retained-exclusion.mjs";
 import { renderManagedRuntimeGateSql } from "./lib/render-managed-workflow-cutover.mjs";
 import {
+  historical89StableReviewedCatalog,
   assertHistorical89AdmissionIdentity,
   readHistorical89PendingIdentities,
   renderHistorical89AdmissionPhase as phase,
@@ -342,6 +343,22 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
     );
   }, 240_000);
   afterAll(() => pg.cleanup());
+
+  it("validates real PG17 custody function definitions before stable comparison", () => {
+    const prepared = prepare(clone());
+    expect(() =>
+      historical89StableReviewedCatalog(
+        prepared.shared.baselineCatalog,
+        prepared.shared.admission,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      historical89StableReviewedCatalog(prepared.shared.baselineCatalog, {
+        ...prepared.shared.admission,
+        operationId: randomUUID(),
+      }),
+    ).toThrow("review_custody_definition");
+  });
 
   it("reaches96 under custody and records one protected operation-bound receipt", () => {
     const prepared = prepare(clone());
