@@ -1,25 +1,13 @@
 #!/usr/bin/env node
-// Executable runner for the reviewed managed-historical89-in-place/v1
-// operation. This is the exact call sequence proved by the "reaches96 under
-// custody and records one protected operation-bound receipt" test in
-// scripts/render-historical89-custody.pg17.real.test.ts, rebuilt as a script
-// against a real `pg` connection instead of the disposable psql fixture. It
-// reuses the reviewed schema and custody validators under scripts/lib/.
-// Startup verification additionally requires an independently pinned durable
-// request and reads current evidence through a shared read-only snapshot.
+// Historical89 startup classification and authenticated already96 verification.
+// Already96 requires an independently pinned durable request and reads current
+// evidence through a shared read-only snapshot.
 //
-// Like the library it calls, this script never claims production
-// authorization: `plan.authorization.authorizesProductionMutation` is false
-// today because no independently reviewed expectation registry exists yet
-// (see render-historical89-admission.mjs). Running it still performs the real
-// schema mutation when pointed at a qualified database - it is the mechanism,
-// not the approval.
-//
-// Scope: this mirrors the "reaches96" test only. It does not withdraw and
-// then restore the CONNECT ACL as a separate later step, and it does not
-// implement cross-invocation resume (recovering a lost operationId from a
-// prior process) - both are explicitly out of this test's sequence and are
-// left to the coordinator, matching PLAN.md section 1C/2.
+// Baseline89 execution is unsupported: no independently reviewed authorization
+// registry exists, and disposable rehearsal does not authorize production
+// mutation. Reject before qualification, which itself creates custody and
+// restricts admission. The mutation sequence below is unreachable until a
+// separately reviewed authorization implementation replaces this denial.
 import pg from "pg";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -417,6 +405,11 @@ async function run() {
     }
     if (currentInspect.count !== phase.baselineCount)
       fail(`unexpected_ledger_state:count=${currentInspect.count}`);
+
+    // Qualification bootstraps custody and changes admission; even rehearsing
+    // here would mutate the target before authorization. No approved registry
+    // exists, so neither qualification nor the later plan may run.
+    fail("production_mutation_not_authorized");
 
     let qualification;
     try {
