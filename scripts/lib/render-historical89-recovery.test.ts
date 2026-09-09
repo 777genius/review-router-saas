@@ -104,6 +104,9 @@ function setup() {
   const passfiles: string[] = [],
     calls: { command: string; args: readonly string[] }[] = [];
   const state = {
+    sourceSettings: { settings: 0, databaseUtcSetting: false },
+    targetSettings: { settings: 0, databaseUtcSetting: false },
+    skipUtcRestore: false,
     materializedView: false,
     targetMaterializedView: false,
     internalTriggerMode: false,
@@ -208,6 +211,12 @@ function setup() {
           ]),
         };
       }
+      if (
+        isTarget &&
+        sql === `ALTER DATABASE "recovery" SET TimeZone TO 'utc';` &&
+        !state.skipUtcRestore
+      )
+        state.targetSettings = { settings: 1, databaseUtcSetting: true };
       let value: unknown = null;
       if (sql === recoveryIdentitySql)
         value = isTarget
@@ -222,7 +231,7 @@ function setup() {
       else if (sql === recoveryScopeSql)
         value = {
           schemas: ["public"],
-          settings: 0,
+          ...(isTarget ? state.targetSettings : state.sourceSettings),
           extensions: [{ name: "plpgsql", version: "1.0" }],
           unsupportedMaterializedViews:
             (isTarget && state.targetMaterializedView) ||
@@ -428,6 +437,80 @@ describe("bounded historical89 recovery evidence", () => {
     expect(JSON.stringify(result)).not.toMatch(
       /fixture-secret|postgresql:|PGDMP/,
     );
+  });
+  it("preserves the sole database UTC setting with scoped target SQL and catalog equality", async () => {
+    const f = setup();
+    const noSettings = setup();
+    const noSettingsResult = await noSettings.restore(
+      await noSettings.capture(),
+    );
+    f.state.sourceSettings = { settings: 1, databaseUtcSetting: true };
+    const artifact = await f.capture();
+    const result = await f.restore(artifact);
+    expect(result.supplementalCatalogSha256).not.toBe(
+      noSettingsResult.supplementalCatalogSha256,
+    );
+    noSettings.cleaned();
+    expect(result.evidence.catalogSha256).toEqual(
+      artifact.sourceObservation.catalogSha256,
+    );
+    expect(f.state.targetSettings).toEqual(f.state.sourceSettings);
+    const writes = f.calls.filter((c) =>
+      c.args.at(-1)?.includes("SET TimeZone"),
+    );
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.args).toContain("dpg-target");
+    expect(writes[0]!.args.at(-1)).toBe(
+      `ALTER DATABASE "recovery" SET TimeZone TO 'utc';`,
+    );
+    f.cleaned();
+  });
+  it("rejects missing restored UTC and source setting drift", async () => {
+    const f = setup();
+    f.state.sourceSettings = { settings: 1, databaseUtcSetting: true };
+    const artifact = await f.capture();
+    f.state.skipUtcRestore = true;
+    await expect(f.restore(artifact)).rejects.toThrow(
+      "restored_scope_settings_mismatch",
+    );
+    f.state.sourceSettings = { settings: 0, databaseUtcSetting: false };
+    await expect(f.restore(artifact)).rejects.toThrow(
+      "source_changed_since_capture",
+    );
+    f.cleaned();
+  });
+  it.each([
+    { settings: 1, databaseUtcSetting: false },
+    { settings: 2, databaseUtcSetting: true },
+    { settings: 0, databaseUtcSetting: true },
+    { settings: 0, databaseUtcSetting: undefined },
+  ])(
+    "rejects unsupported or malformed settings %j on source and target",
+    async (settings) => {
+      const f = setup();
+      const artifact = await f.capture();
+      f.state.targetSettings = settings as typeof f.state.targetSettings;
+      await expect(f.restore(artifact)).rejects.toThrow(
+        "unsupported_scope_or_visibility",
+      );
+      expect(f.mutations()).toHaveLength(0);
+      f.state.sourceSettings = settings as typeof f.state.sourceSettings;
+      await expect(f.capture()).rejects.toThrow(
+        "unsupported_scope_or_visibility",
+      );
+      expect(f.calls.filter((c) => c.command === "pg_dump")).toHaveLength(1);
+      f.cleaned();
+    },
+  );
+  it("does not erase a target UTC setting for a no-setting artifact", async () => {
+    const f = setup();
+    const artifact = await f.capture();
+    f.state.targetSettings = { settings: 1, databaseUtcSetting: true };
+    await expect(f.restore(artifact)).rejects.toThrow(
+      "target_settings_mismatch",
+    );
+    expect(f.mutations()).toHaveLength(0);
+    f.cleaned();
   });
   it.each([
     ["materializedView", "unsupported_materialized_views"],

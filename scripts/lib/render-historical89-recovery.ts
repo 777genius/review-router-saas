@@ -98,7 +98,7 @@ const reference = (s: string) => {
 const limitations = Object.freeze([
   "No production mutation or rollout authorization.",
   "Writer exclusion and consistency references are external and unverified; the root must maintain exclusion through verification.",
-  "Logical equivalence covers public-schema historical89 on PG17 with plpgsql only, no role/database settings, and database connection limit -1; unsupported catalogs fail closed. Passwords and authentication are not captured or reconstructed.",
+  "Logical equivalence covers public-schema historical89 on PG17 with plpgsql only, no settings except a sole database-wide TimeZone=utc on the current database, and database connection limit -1; unsupported catalogs fail closed. Passwords and authentication are not captured or reconstructed.",
   "Internal triggers must retain PostgreSQL default origin mode (O); disabled, replica and always internal modes are unsupported on both source and restore. User rewrite rules are unsupported; only standard origin-mode view _RETURN rules are allowed.",
   "Same-process artifact handle required; root owns private artifact retention and disposable cluster cleanup, including failed restores.",
 ]);
@@ -173,9 +173,13 @@ function identity(
 // reads pg_views, so equal stored rows cannot prove equal future refresh behavior.
 // Only standard origin-mode ordinary-view _RETURN rules are exempt from rejection;
 // every other public rewrite rule (including disabled rules) is unsupported.
+// Count the entire settings catalog but project only an exact nonsecret match:
+// other databases, global/role settings, extra keys and conflicting values must
+// still fail closed without returning their potentially secret configuration.
 export const recoveryScopeSql = `SELECT json_build_object(
  'schemas',(SELECT json_agg(nspname ORDER BY nspname) FROM pg_namespace WHERE nspname !~ '^pg_' AND nspname<>'information_schema'),
  'settings',(SELECT count(*) FROM pg_db_role_setting),
+ 'databaseUtcSetting',EXISTS (SELECT 1 FROM pg_db_role_setting s JOIN pg_database d ON d.oid=s.setdatabase WHERE d.datname=current_database() AND s.setrole=0 AND s.setconfig=ARRAY['TimeZone=utc']::text[]),
  'extensions',(SELECT json_agg(json_build_object('name',extname,'version',extversion) ORDER BY extname) FROM pg_extension),
  'database',(SELECT json_build_object('encoding',encoding,'collate',datcollate,'ctype',datctype,'provider',datlocprovider,'locale',datlocale,'icuRules',daticurules,'connectionLimit',datconnlimit,'owner',pg_get_userbyid(datdba),'acl',(SELECT json_agg(json_build_object('grantee',coalesce(r.rolname,'PUBLIC'),'grantor',pg_get_userbyid(a.grantor),'privilege',a.privilege_type,'grantable',a.is_grantable) ORDER BY coalesce(r.rolname,'PUBLIC'),a.privilege_type,pg_get_userbyid(a.grantor),a.is_grantable) FROM aclexplode(coalesce(datacl,acldefault('d',datdba))) a LEFT JOIN pg_roles r ON r.oid=a.grantee)) FROM pg_database WHERE datname=current_database()),
  'types',(SELECT coalesce(json_agg(json_build_object('name',t.typname,'kind',t.typtype,'enum',(SELECT json_agg(enumlabel ORDER BY enumsortorder) FROM pg_enum WHERE enumtypid=t.oid)) ORDER BY t.typname),'[]') FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typtype='e'),
@@ -233,7 +237,8 @@ function scope(commands: CommandExecutor, url: string) {
   if (s.unsupportedRewriteRules !== 0) fail("unsupported_rewrite_rules");
   if (
     !equal(s.schemas, ["public"]) ||
-    s.settings !== 0 ||
+    typeof s.databaseUtcSetting !== "boolean" ||
+    s.settings !== (s.databaseUtcSetting ? 1 : 0) ||
     s.unsupportedTypes !== 0 ||
     s.unsupportedCatalog !== 0 ||
     s.database.connectionLimit !== -1 ||
@@ -841,7 +846,10 @@ export async function verifyReviewedRestore(input: {
       !equal(ledger(commands, input.sourceUrl), a.ledger)
     )
       fail("source_changed_since_capture");
-    scope(commands, input.targetUrl);
+    const targetScope = scope(commands, input.targetUrl);
+    const capturedScope = state.scope as ReturnType<typeof scope>;
+    if (targetScope.databaseUtcSetting && !capturedScope.databaseUtcSetting)
+      fail("target_settings_mismatch");
     // Recheck before first mutation. Independent root must own/exclude target
     // writers too; this is not an admission lock or a general restore runner.
     identity(commands, input.targetUrl, target);
@@ -874,6 +882,16 @@ export async function verifyReviewedRestore(input: {
       reconstruct(commands, input.targetUrl, adapter, plan);
       phase = "database_reconstruction";
       executeSql(commands, input.targetUrl, databaseSql);
+      // Database properties in a custom archive are restored only with
+      // pg_restore --create. That would try to create this existing target and is
+      // incompatible with --single-transaction. Restore only the admitted
+      // nonsecret constant on the separately identified disposable database.
+      if (capturedScope.databaseUtcSetting)
+        executeSql(
+          commands,
+          input.targetUrl,
+          `ALTER DATABASE ${identifier(target.database)} SET TimeZone TO 'utc';`,
+        );
       const c = decomposePostgresConnection(input.targetUrl);
       try {
         phase = "pg_restore";
@@ -922,6 +940,7 @@ export async function verifyReviewedRestore(input: {
     for (const key of [
       "schemas",
       "settings",
+      "databaseUtcSetting",
       "extensions",
       "database",
       "types",

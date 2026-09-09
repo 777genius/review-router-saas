@@ -23,7 +23,7 @@ import {
 } from "../packages/features/release-rollout/src/domain/effective-principal-inventory";
 import type { CommandExecutor } from "../packages/features/release-rollout/src/adapters/process-command";
 
-const database = "recovery89";
+const database = "review_router_dimy";
 // These synthetic URLs never leave the fixture executor: dpg-* is mapped
 // transparently to loopback INSIDE each owned offline container. No credential
 // boundary widening, host TCP publication, actual password or network access.
@@ -31,9 +31,9 @@ const sourceUrl = `postgresql://postgres:fixture-only@dpg-source/${database}?ssl
 const targetUrl = `postgresql://postgres:fixture-only@dpg-target/${database}?sslmode=disable`;
 const seed = `INSERT INTO "Workspace" (id,slug,name,"updatedAt") VALUES ('recovery','recovery','disposable recovery',now()); CREATE SEQUENCE public.recovery_sequence; SELECT setval('public.recovery_sequence',9223372036854775806,true);`;
 const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
-(enabled ? describe.sequential : describe.skip)(
-  "historical89 actual custom dump and disposable restore, offline PG17.10",
-  () => {
+(enabled ? describe.sequential : describe.skip).each([false, true])(
+  "historical89 actual custom dump and disposable restore, offline PG17.10 (database UTC=%s)",
+  (databaseUtcSetting) => {
     const source = managedPg17Fixture(),
       referenceModel = managedPg17Fixture();
     const targets: ReturnType<typeof managedPg17Fixture>[] = [];
@@ -43,6 +43,7 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
     let sharedArtifact: Awaited<ReturnType<typeof captureRecoveryArtifact>>;
     let activeTarget: ReturnType<typeof managedPg17Fixture>;
     let activeDrift: string | undefined;
+    let skipUtcRestore = false;
     let baseline: Awaited<ReturnType<typeof fixture>>;
     let baselineResult: Awaited<ReturnType<typeof verifyReviewedRestore>>;
     // Tests are serial: one immutable artifact, distinct owned target clusters.
@@ -59,6 +60,13 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
     let restoreCalls = 0;
     const commands: CommandExecutor = {
       execute(command, args, options) {
+        if (
+          skipUtcRestore &&
+          command === "psql" &&
+          args.includes("dpg-target") &&
+          args.at(-1) === `ALTER DATABASE "${database}" SET TimeZone TO 'utc';`
+        )
+          return { stdout: "" };
         const started = Date.now();
         if (command === "pg_dump") dumpCalls++;
         if (command === "pg_restore") restoreCalls++;
@@ -197,7 +205,16 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
       };
       await source.start();
       await prepareHistorical89Fixture(source, database, seed);
+      if (databaseUtcSetting)
+        source.query(
+          database,
+          `ALTER DATABASE ${database} SET TimeZone TO 'utc'`,
+          "postgres",
+        );
       const sourceScope = read(source, recoveryScopeSql);
+      expect(sourceScope.settings).toBe(databaseUtcSetting ? 1 : 0);
+      // On the exact base commit the UTC variant fails capture below because
+      // recovery scope requires settings === 0. No mocked scope is substituted.
       expect(sourceScope.unsupportedMaterializedViews).toBe(0);
       expect(sourceScope.unsupportedInternalTriggerModes).toBe(0);
       expect(sourceScope.unsupportedRewriteRules).toBe(0);
@@ -227,6 +244,9 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
         consistencyReference: "fixture-no-writers",
         commands,
       });
+      // Assert the new projection only after capture, so this test against the
+      // original recovery implementation reproduces its settings-count gate.
+      expect(sourceScope.databaseUtcSetting).toBe(databaseUtcSetting);
       console.info(
         `recovery_measurement capture_ms=${Date.now() - captureStarted}`,
       );
@@ -287,6 +307,33 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
             .toString(),
         ).toBe("PGDMP");
         expect(result.ledger).toHaveLength(89);
+        expect(result.evidence.catalogSha256).toEqual(
+          f.artifact.sourceObservation.catalogSha256,
+        );
+        const settingsSql = `SELECT coalesce(json_agg(json_build_object('database',d.datname,'allRoles',s.setrole=0,'config',s.setconfig) ORDER BY d.datname),'[]'::json) FROM pg_db_role_setting s LEFT JOIN pg_database d ON d.oid=s.setdatabase`;
+        const expectedSettings = databaseUtcSetting
+          ? [{ database, allRoles: true, config: ["TimeZone=utc"] }]
+          : [];
+        expect(read(source, settingsSql)).toEqual(expectedSettings);
+        expect(read(f.target, settingsSql)).toEqual(expectedSettings);
+        expect(read(f.target, recoveryScopeSql)).toEqual(
+          read(source, recoveryScopeSql),
+        );
+        if (databaseUtcSetting) {
+          // SHOW canonicalizes the value; the exact stored spelling is checked above.
+          expect(f.target.query(database, "SHOW TimeZone", "postgres")).toBe(
+            "UTC",
+          );
+          // The archive contains database properties, but the normal restore
+          // omits them. --create emits them along with CREATE DATABASE.
+          const path = join(f.artifact.directory, "recovery.dump");
+          const setting = new RegExp(
+            `ALTER DATABASE "?${database}"? SET "?timezone"? TO 'utc';`,
+            "i",
+          );
+          expect(source.recoveryArchiveSql(path, false)).not.toMatch(setting);
+          expect(source.recoveryArchiveSql(path, true)).toMatch(setting);
+        }
         expect(result.evidence.catalogSha256.sequences).toMatch(/^sha256:/);
         expect(result.evidence.catalogSha256.aclOwnershipDefaults).toMatch(
           /^sha256:/,
@@ -324,6 +371,178 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
         f.target.cleanup();
       }
     }, 180_000);
+    it("requires explicit scoped UTC restoration in the existing lifecycle", async () => {
+      if (!databaseUtcSetting) return;
+      const f = await fixture();
+      skipUtcRestore = true;
+      try {
+        await expect(f.restore()).rejects.toThrow(
+          "restored_scope_settings_mismatch",
+        );
+        expect(read(f.target, recoveryScopeSql).settings).toBe(0);
+      } finally {
+        skipUtcRestore = false;
+        f.target.cleanup();
+      }
+    }, 180_000);
+    it("rejects an otherwise admitted source setting change since capture", async () => {
+      const f = await fixture();
+      try {
+        source.query(
+          database,
+          databaseUtcSetting
+            ? `ALTER DATABASE ${database} RESET TimeZone`
+            : `ALTER DATABASE ${database} SET TimeZone TO 'utc'`,
+          "postgres",
+        );
+        const before = restoreCalls;
+        await expect(f.restore()).rejects.toThrow(
+          "source_changed_since_capture",
+        );
+        expect(restoreCalls).toBe(before);
+        expect(
+          f.target.query(
+            database,
+            "SELECT count(*) FROM pg_roles WHERE rolname='reviewrouter'",
+            "postgres",
+          ),
+        ).toBe("0");
+      } finally {
+        source.query(
+          database,
+          databaseUtcSetting
+            ? `ALTER DATABASE ${database} SET TimeZone TO 'utc'`
+            : `ALTER DATABASE ${database} RESET TimeZone`,
+          "postgres",
+        );
+        f.target.cleanup();
+      }
+    }, 180_000);
+    it("does not erase target UTC when the captured baseline has no setting", async () => {
+      if (databaseUtcSetting) return;
+      const f = await fixture();
+      try {
+        f.target.query(
+          database,
+          `ALTER DATABASE ${database} SET TimeZone TO 'utc'`,
+          "postgres",
+        );
+        const before = restoreCalls;
+        await expect(f.restore()).rejects.toThrow("target_settings_mismatch");
+        expect(restoreCalls).toBe(before);
+        expect(read(f.target, recoveryScopeSql).databaseUtcSetting).toBe(true);
+        expect(
+          f.target.query(
+            database,
+            "SELECT count(*) FROM pg_roles WHERE rolname='reviewrouter'",
+            "postgres",
+          ),
+        ).toBe("0");
+      } finally {
+        f.target.cleanup();
+      }
+    }, 180_000);
+    it.each([
+      [
+        "arbitrary",
+        `ALTER DATABASE ${database} SET application_name TO 'fixture-only'`,
+        `ALTER DATABASE ${database} RESET application_name`,
+      ],
+      [
+        "conflicting timezone",
+        `ALTER DATABASE ${database} SET TimeZone TO 'Europe/Paris'`,
+        `ALTER DATABASE ${database} RESET TimeZone`,
+      ],
+      [
+        "role specific",
+        `ALTER ROLE postgres IN DATABASE ${database} SET TimeZone TO 'utc'`,
+        `ALTER ROLE postgres IN DATABASE ${database} RESET TimeZone`,
+      ],
+      [
+        "global role",
+        `ALTER ROLE postgres SET TimeZone TO 'utc'`,
+        `ALTER ROLE postgres RESET TimeZone`,
+      ],
+      [
+        "wrong database",
+        `ALTER DATABASE postgres SET TimeZone TO 'utc'`,
+        `ALTER DATABASE postgres RESET TimeZone`,
+      ],
+      // SQL cannot create a global all-roles row; this catalog mutation is
+      // confined to the owned offline fixture and models that rejected shape.
+      [
+        "global all roles",
+        `INSERT INTO pg_db_role_setting VALUES (0,0,ARRAY['TimeZone=utc'])`,
+        `DELETE FROM pg_db_role_setting WHERE setdatabase=0 AND setrole=0`,
+      ],
+      [
+        "duplicate/conflicting array",
+        // Seed the row in either UTC mode, then bypass ALTER's key deduplication
+        // only in this disposable catalog row. PG17 catalogs cannot use ON CONFLICT.
+        `BEGIN; SET LOCAL lock_timeout='5s'; SET LOCAL statement_timeout='15s'; ALTER DATABASE ${database} SET TimeZone TO 'utc'; UPDATE pg_db_role_setting SET setconfig=ARRAY['TimeZone=utc','TimeZone=Europe/Paris'] WHERE setdatabase=(SELECT oid FROM pg_database WHERE datname='${database}') AND setrole=0; COMMIT;`,
+        `ALTER DATABASE ${database} RESET ALL`,
+      ],
+    ])(
+      "rejects actual %s settings on source and empty target before mutation",
+      async (_kind, sql, cleanup) => {
+        const f = await fixture();
+        const assertMalformedArray = (
+          pg: ReturnType<typeof managedPg17Fixture>,
+        ) => {
+          if (_kind === "duplicate/conflicting array")
+            expect(
+              read(
+                pg,
+                `SELECT to_json(setconfig) FROM pg_db_role_setting WHERE setdatabase=(SELECT oid FROM pg_database WHERE datname='${database}') AND setrole=0`,
+              ),
+            ).toEqual(["TimeZone=utc", "TimeZone=Europe/Paris"]);
+        };
+        try {
+          f.target.query(database, sql, "postgres");
+          assertMalformedArray(f.target);
+          const beforeRestore = restoreCalls;
+          await expect(f.restore()).rejects.toThrow(
+            "unsupported_scope_or_visibility",
+          );
+          expect(restoreCalls).toBe(beforeRestore);
+          expect(
+            f.target.query(
+              database,
+              "SELECT count(*) FROM pg_roles WHERE rolname='reviewrouter'",
+              "postgres",
+            ),
+          ).toBe("0");
+          try {
+            source.query(database, sql, "postgres");
+            assertMalformedArray(source);
+            const beforeDump = dumpCalls;
+            await expect(
+              captureRecoveryArtifact({
+                sourceUrl,
+                expectedSource: sourceIdentity,
+                directory: join(root, "rejected-settings"),
+                reviewedPlan: plan,
+                exclusionReference: "fixture-no-writers",
+                consistencyReference: "fixture-no-writers",
+                commands,
+              }),
+            ).rejects.toThrow("unsupported_scope_or_visibility");
+            expect(dumpCalls).toBe(beforeDump);
+          } finally {
+            source.query(database, cleanup, "postgres");
+            if (databaseUtcSetting)
+              source.query(
+                database,
+                `ALTER DATABASE ${database} SET TimeZone TO 'utc'`,
+                "postgres",
+              );
+          }
+        } finally {
+          f.target.cleanup();
+        }
+      },
+      180_000,
+    );
     it.each([
       [
         "row",
@@ -341,6 +560,10 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
       ["ACL", 'GRANT SELECT ON public."Workspace" TO historical_inherited'],
       ["RLS", 'ALTER TABLE public."Workspace" ENABLE ROW LEVEL SECURITY'],
       ["membership", "GRANT reviewrouter_api TO historical_inherited"],
+      [
+        "database timezone",
+        `ALTER DATABASE ${database} SET TimeZone TO 'Europe/Paris'`,
+      ],
       [
         "internal FK trigger",
         `DO $drift$
@@ -376,6 +599,7 @@ const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
             ACL: "restored_grants_mismatch",
             RLS: "restored_rls_mismatch",
             membership: "restored_memberships_mismatch",
+            "database timezone": "unsupported_scope_or_visibility",
             "internal FK trigger": "unsupported_internal_trigger_modes",
             "rewrite rule": "unsupported_rewrite_rules",
           };
