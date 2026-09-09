@@ -24,6 +24,7 @@ import {
   renderHistorical89AdmissionRestrictionSql,
   renderHistorical89FleetQuiescenceGuardSql,
 } from "./render-historical89-execution-boundary.mjs";
+import { renderManagedEvidenceDigest } from "./render-schema-handoff-policy.mjs";
 
 // ---------------------------------------------------------------------------
 // The execution boundary: custody, admission and one atomic effect.
@@ -212,6 +213,8 @@ export function planHistorical89InPlaceOperation(input) {
     fail("fence_binding");
   if (boundary.recoveryIdentitySha256 !== admission.recoveryIdentitySha256)
     fail("recovery_binding");
+  if (boundary.connectAclDigest !== renderManagedEvidenceDigest(connectAcl))
+    fail("connect_acl_binding");
   const binding = historical89InPlaceCustodyBinding(admission);
   const custody = renderManagedOperationCustodyBootstrap(binding);
   const permitCoordinates = Object.freeze({
@@ -389,6 +392,23 @@ export function reconcileHistorical89InPlaceOperation(input) {
           .pop()}`,
       ]);
     }
+    const expectedPermit = {
+      ...plan.binding,
+      kind: phase.kind,
+      admissionIdentityDigest: plan.identityDigest,
+      terminalCatalogDigest: plan.reviewedTerminalCatalogDigest,
+      epoch: String(plan.coordinates.epoch),
+      generation: String(plan.coordinates.generation),
+      nonce: plan.coordinates.nonce,
+      state: "terminal",
+    };
+    if (
+      keysOf(currentPermit) !== keysOf(expectedPermit) ||
+      Object.entries(expectedPermit).some(
+        ([key, value]) => currentPermit[key] !== value,
+      )
+    )
+      return fenced(["current_permit_untrusted"]);
     return Object.freeze({
       decision: "reconciled-without-replay",
       replay: false,
