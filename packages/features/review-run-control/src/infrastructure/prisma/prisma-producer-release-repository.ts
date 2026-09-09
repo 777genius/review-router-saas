@@ -1,3 +1,4 @@
+import { acquireCurrentScopeGuards } from "@reviewrouter/platform-db";
 import type { PrismaClient } from "@prisma/client";
 import type {
   ProducerRelease,
@@ -57,6 +58,9 @@ export class PrismaProducerReleaseRepository
     profile: ReviewProtocolLimitsV2,
   ): Promise<ImmutableRegistryWriteResult<ReviewProtocolLimitsV2>> {
     return this.prisma.$transaction(async (transaction) => {
+      await acquireCurrentScopeGuards(transaction, [
+        { scope: "global", mode: "exclusive" },
+      ]);
       await lockReviewRunControlKeys(transaction, "review-limits", [
         `id:${profile.protocolLimitsProfileId}`,
         `digest:${profile.limitsDigest}`,
@@ -109,6 +113,9 @@ export class PrismaProducerReleaseRepository
     profile: ReviewOperationalSloProfileV2,
   ): Promise<ImmutableRegistryWriteResult<ReviewOperationalSloProfileV2>> {
     return this.prisma.$transaction(async (transaction) => {
+      await acquireCurrentScopeGuards(transaction, [
+        { scope: "global", mode: "exclusive" },
+      ]);
       await lockReviewRunControlKeys(transaction, "review-slo", [
         `id:${profile.operationalSloProfileId}`,
         `digest:${profile.sloDigest}`,
@@ -169,6 +176,9 @@ export class PrismaProducerReleaseRepository
   ): Promise<ImmutableRegistryWriteResult<ProducerRelease>> {
     const tuple = producerReleaseImmutableKey(release);
     return this.prisma.$transaction(async (transaction) => {
+      await acquireCurrentScopeGuards(transaction, [
+        { scope: "global", mode: "exclusive" },
+      ]);
       await lockReviewRunControlKeys(transaction, "producer-release", [
         `id:${release.producerReleaseId}`,
         `tuple:${tuple}`,
@@ -225,6 +235,9 @@ export class PrismaProducerReleaseRepository
     readonly revokedAt: Date;
   }) {
     return this.prisma.$transaction(async (transaction) => {
+      await acquireCurrentScopeGuards(transaction, [
+        { scope: "global", mode: "exclusive" },
+      ]);
       await lockReviewRunControlKeys(transaction, "producer-release", [
         `id:${input.producerReleaseId}`,
       ]);
