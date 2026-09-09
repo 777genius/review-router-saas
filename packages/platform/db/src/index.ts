@@ -72,3 +72,9 @@ function parseOptionalPositiveInteger(name: string): number | undefined {
 }
 
 export { PrismaClient };
+
+export {
+  acquireCurrentScopeGuards,
+  CURRENT_SCOPE_GUARD_NAMESPACE,
+  type CurrentScopeGuard,
+} from "./current-scope-guards.js";

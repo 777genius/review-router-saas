@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { PrismaAuditLogRepository } from "@reviewrouter/features-audit-log";
 import {
+  acquireReviewConfigurationWriteScope,
   isPrismaReviewConfigurationSerializationConflict,
   isPrismaReviewConfigurationWriteConflict,
   isReviewConfigurationWriteConflictError,
@@ -21,6 +22,10 @@ export class PrismaReviewConfigurationOperatorMutation implements ReviewConfigur
       try {
         return await this.prisma.$transaction(
           async (transaction) => {
+            await acquireReviewConfigurationWriteScope(
+              transaction,
+              input.target,
+            );
             const configurations =
               new PrismaReviewConfigurationTransactionRepository(transaction);
             const current = await resolveReviewConfiguration(input.target, {
