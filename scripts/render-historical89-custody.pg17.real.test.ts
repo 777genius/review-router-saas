@@ -1268,8 +1268,10 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
     ["SCHEMA preparation_no_usage", "CREATE"],
     [`DATABASE ${target}`, "CREATE"],
     ["SEQUENCE preparation_public_sequence", "USAGE"],
+    ["SEQUENCE preparation_no_usage.private_sequence", "USAGE"],
     ["FUNCTION public.preparation_public_definer()", "EXECUTE"],
     ["FUNCTION public.preparation_public_trigger()", "EXECUTE"],
+    ["FUNCTION preparation_no_usage.private_definer()", "EXECUTE"],
     ["PROCEDURE public.preparation_public_procedure()", "EXECUTE"],
   ])(
     "rejects effective PUBLIC %s %s without revoking it",
@@ -1281,6 +1283,12 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
         `
       CREATE TABLE public.preparation_public_probe (value integer);
       CREATE SCHEMA preparation_no_usage;
+      CREATE SEQUENCE preparation_no_usage.private_sequence;
+      CREATE FUNCTION preparation_no_usage.private_definer() RETURNS integer
+        LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN INSERT INTO public.preparation_public_probe VALUES (1); RETURN 1; END';
+      REVOKE EXECUTE ON FUNCTION preparation_no_usage.private_definer() FROM PUBLIC;
+      CREATE VIEW public.preparation_private_view AS SELECT preparation_no_usage.private_definer() AS value;
+      GRANT SELECT ON public.preparation_private_view TO PUBLIC;
       CREATE SEQUENCE public.preparation_public_sequence;
       CREATE FUNCTION public.preparation_public_definer() RETURNS integer
         LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
@@ -1315,6 +1323,31 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
       pg.query(db, revoke);
       const baseline = read(db, renderHistorical89PreparationPrepare(b).sql);
       pg.query(db, grant);
+      if (object === "SEQUENCE preparation_no_usage.private_sequence") {
+        const sequenceOid = pg.query(
+          db,
+          "SELECT 'preparation_no_usage.private_sequence'::regclass::oid",
+        );
+        expect(
+          pg.query(
+            db,
+            `SELECT nextval(${sequenceOid}::oid::regclass)`,
+            "reviewrouter_operation_custody_reader",
+          ),
+        ).toBe("1");
+      }
+      if (object === "FUNCTION preparation_no_usage.private_definer()") {
+        expect(
+          pg.query(
+            db,
+            "SELECT value FROM public.preparation_private_view",
+            "reviewrouter_operation_custody_reader",
+          ),
+        ).toBe("1");
+        expect(
+          pg.query(db, "SELECT value FROM public.preparation_public_probe"),
+        ).toBe("1");
+      }
       if (object === "FUNCTION public.preparation_public_trigger()") {
         // A reader can attach a PUBLIC definer trigger to its own temporary table.
         pg.query(

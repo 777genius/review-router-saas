@@ -158,8 +158,6 @@ ALTER TABLE ${table} ENABLE ALWAYS TRIGGER historical89_preparation_immutable;`;
 const oid = (r) => `(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='${r}')`;
 const externalNamespace = `n.nspname NOT IN ('${schema}','pg_catalog','information_schema','pg_toast')
   AND n.nspname !~ '^pg_(toast_)?temp_'`;
-const accessibleExternalNamespace = `${externalNamespace}
-  AND pg_catalog.has_schema_privilege(${oid(reader)},n.oid,'USAGE')`;
 
 /** PL/pgSQL guard shared with final attestation. It compares definitions to
  * reviewed source, never to a digest stored in the schema being authenticated.
@@ -253,14 +251,14 @@ export function renderHistorical89PreparationCatalogGuard(
   OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE ${externalNamespace}
     AND pg_catalog.has_schema_privilege(${oid(reader)},n.oid,'CREATE'))
   OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
-    WHERE ${accessibleExternalNamespace} AND c.relkind IN ('r','p','v','m','f')
+    WHERE ${externalNamespace} AND c.relkind IN ('r','p','v','m','f')
     AND (pg_catalog.has_table_privilege(${oid(reader)},c.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
       OR pg_catalog.has_any_column_privilege(${oid(reader)},c.oid,'INSERT,UPDATE,REFERENCES')))
   OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
-    WHERE ${accessibleExternalNamespace} AND c.relkind='S'
+    WHERE ${externalNamespace} AND c.relkind='S'
     AND CASE WHEN c.relkind='S' THEN pg_catalog.has_sequence_privilege(${oid(reader)},c.oid,'USAGE,UPDATE') ELSE false END)
   OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-    WHERE ${accessibleExternalNamespace} AND p.prosecdef AND p.prokind IN ('f','p')
+    WHERE ${externalNamespace} AND p.prosecdef AND p.prokind IN ('f','p')
     AND p.prorettype<>'pg_catalog.event_trigger'::regtype
     AND pg_catalog.has_function_privilege(${oid(reader)},p.oid,'EXECUTE')) THEN
     RAISE EXCEPTION 'preparation_catalog_attestation';
