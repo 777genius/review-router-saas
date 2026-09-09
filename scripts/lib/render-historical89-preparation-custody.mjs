@@ -258,10 +258,10 @@ export function renderHistorical89PreparationCatalogGuard(
       OR pg_catalog.has_any_column_privilege(${oid(reader)},c.oid,'INSERT,UPDATE,REFERENCES')))
   OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
     WHERE ${accessibleExternalNamespace} AND c.relkind='S'
-    AND pg_catalog.has_sequence_privilege(${oid(reader)},c.oid,'USAGE,UPDATE'))
+    AND CASE WHEN c.relkind='S' THEN pg_catalog.has_sequence_privilege(${oid(reader)},c.oid,'USAGE,UPDATE') ELSE false END)
   OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE ${accessibleExternalNamespace} AND p.prosecdef AND p.prokind IN ('f','p')
-    AND p.prorettype NOT IN ('pg_catalog.trigger'::regtype,'pg_catalog.event_trigger'::regtype)
+    AND p.prorettype<>'pg_catalog.event_trigger'::regtype
     AND pg_catalog.has_function_privilege(${oid(reader)},p.oid,'EXECUTE')) THEN
     RAISE EXCEPTION 'preparation_catalog_attestation';
   END IF;

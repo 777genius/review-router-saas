@@ -1269,6 +1269,7 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
     [`DATABASE ${target}`, "CREATE"],
     ["SEQUENCE preparation_public_sequence", "USAGE"],
     ["FUNCTION public.preparation_public_definer()", "EXECUTE"],
+    ["FUNCTION public.preparation_public_trigger()", "EXECUTE"],
     ["PROCEDURE public.preparation_public_procedure()", "EXECUTE"],
   ])(
     "rejects effective PUBLIC %s %s without revoking it",
@@ -1285,8 +1286,11 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
         LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
       CREATE PROCEDURE public.preparation_public_procedure()
         LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN NULL; END';
+      CREATE FUNCTION public.preparation_public_trigger() RETURNS trigger
+        LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN INSERT INTO public.preparation_public_probe VALUES (NEW.value); RETURN NEW; END';
       REVOKE EXECUTE ON FUNCTION public.preparation_public_definer() FROM PUBLIC;
       REVOKE EXECUTE ON PROCEDURE public.preparation_public_procedure() FROM PUBLIC;
+      REVOKE EXECUTE ON FUNCTION public.preparation_public_trigger() FROM PUBLIC;
     `,
       );
       const grant = `GRANT ${privilege} ON ${object} TO PUBLIC`;
@@ -1311,6 +1315,20 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
       pg.query(db, revoke);
       const baseline = read(db, renderHistorical89PreparationPrepare(b).sql);
       pg.query(db, grant);
+      if (object === "FUNCTION public.preparation_public_trigger()") {
+        // A reader can attach a PUBLIC definer trigger to its own temporary table.
+        pg.query(
+          db,
+          `CREATE TEMP TABLE preparation_trigger_input (value integer);
+        CREATE TRIGGER exploit AFTER INSERT ON preparation_trigger_input
+          FOR EACH ROW EXECUTE FUNCTION public.preparation_public_trigger();
+        INSERT INTO preparation_trigger_input VALUES (1);`,
+          "reviewrouter_operation_custody_reader",
+        );
+        expect(
+          pg.query(db, "SELECT value FROM public.preparation_public_probe"),
+        ).toBe("1");
+      }
       expect(() =>
         pg.query(
           db,
