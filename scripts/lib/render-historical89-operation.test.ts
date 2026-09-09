@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
+import { renderManagedEvidenceDigest } from "./render-schema-handoff-policy.mjs";
+import { assertHistorical89InPlaceAclDelta } from "./render-historical89-inplace-transaction.mjs";
+import { renderHistorical89PendingDigest } from "./render-historical89-admission.mjs";
 import { describe, expect, it } from "vitest";
 import {
   authorizeHistorical89InPlaceOperation,
@@ -215,5 +220,568 @@ describe("historical89 in-place operation", () => {
         } as never),
       ).toMatchObject({ decision: "fenced", reasons: ["plan_untrusted"] });
     }
+  });
+});
+
+// Synthetic observations; exercise the real planner, classifier and receipt validator.
+describe("operation observation bindings", () => {
+  const phase = renderHistorical89AdmissionPhase;
+  const inventory = readRenderHistorical96CheckoutInventory();
+  const ledger = (count: number) =>
+    inventory.slice(0, count).map((r, i) => ({
+      migrationName: r.migrationName,
+      checksum: r.checksum,
+      id: `00000000-0000-0000-0000-${String(i + 1).padStart(12, "0")}`,
+      startedAt: "2026-08-01T00:00:00.000001Z",
+      finishedAt: "2026-08-01T00:00:01.000001Z",
+      rolledBackAt: null,
+      appliedStepsCount: 1,
+      logsPresent: false,
+      hasLogs: false,
+      logsDigest: null,
+    }));
+  const originalMembership = {
+    role: "reviewrouter_release_schema_owner",
+    member: "reviewrouter",
+    grantor: "postgres",
+    adminOption: true,
+    inheritOption: false,
+    setOption: false,
+  };
+  const baselineCatalog = {
+    version: 1,
+    serverVersionNum: 170010,
+    database: "review_router_dimy",
+    sessionUser: "reviewrouter",
+    currentUser: "reviewrouter",
+    facts: [
+      {
+        family: "authority",
+        fact: {
+          roles: [
+            {
+              name: "reviewrouter_release_schema_owner",
+              canLogin: false,
+              superuser: false,
+              bypassRls: false,
+              replication: false,
+              createDatabase: false,
+              createRole: false,
+            },
+            {
+              name: "reviewrouter_release_migration",
+              canLogin: true,
+              superuser: false,
+              bypassRls: false,
+              replication: false,
+              createDatabase: false,
+              createRole: false,
+            },
+          ],
+        },
+      },
+    ],
+  };
+  // The four reviewed provider rows, in the exact shape the 1A projection emits.
+  const providerRow = (
+    oid: string,
+    objectType: string,
+    grantees: string[],
+    privileges: string[],
+  ) => ({
+    oid,
+    ownerOid: "10",
+    owner: "postgres",
+    namespaceOid: "0",
+    schema: "*",
+    objectType,
+    raw: `{postgres=X/postgres}`,
+    entries: grantees.flatMap((grantee) =>
+      privileges.map((privilege) => ({
+        grantee,
+        granteeOid:
+          grantee === "PUBLIC" ? "0" : grantee === "postgres" ? "10" : "20",
+        grantor: "postgres",
+        grantorOid: "10",
+        privilege,
+        grantable: false,
+      })),
+    ),
+  });
+  const defaultAcl = () => ({
+    version: 1,
+    rows: [
+      providerRow(
+        "101",
+        "S",
+        ["postgres", "reviewrouter"],
+        ["SELECT", "UPDATE", "USAGE"],
+      ),
+      providerRow(
+        "102",
+        "T",
+        ["PUBLIC", "postgres", "reviewrouter"],
+        ["USAGE"],
+      ),
+      providerRow(
+        "103",
+        "f",
+        ["PUBLIC", "postgres", "reviewrouter"],
+        ["EXECUTE"],
+      ),
+      providerRow(
+        "104",
+        "r",
+        ["postgres", "reviewrouter"],
+        [
+          "INSERT",
+          "SELECT",
+          "UPDATE",
+          "DELETE",
+          "TRUNCATE",
+          "REFERENCES",
+          "TRIGGER",
+          "MAINTAIN",
+        ],
+      ),
+    ],
+  });
+  const creatorEvidence = () => ({
+    sessionUser: "reviewrouter",
+    currentUser: "reviewrouter",
+    creatingRoles: ["reviewrouter"],
+    roleSettings: [],
+    securityDefiners: [
+      {
+        identity: "public.codex_oauth_secret_namespace_tombstone_guard()",
+        effectiveRole: "reviewrouter",
+        createsObjects: false,
+      },
+    ],
+    dynamicDdl: [
+      {
+        identity: "000089 canonical owner transfer",
+        effectiveRole: "reviewrouter",
+        createsObjects: false,
+      },
+    ],
+    triggerCreators: [],
+  });
+  const gate = { gateStatus: "closed", authzEpoch: "3", revision: "7" };
+  const digest = (n: number) =>
+    `sha256:${String(n).padStart(2, "0").repeat(32)}`;
+  const admission = (overrides: Record<string, unknown> = {}) => ({
+    providerDatabaseResourceId: "dpg-da32ipmk1f9s73dttm90-a",
+    systemIdentifier: "7300000000000000001",
+    databaseOid: "16401",
+    databaseName: "review_router_dimy",
+    recoveryIdentitySha256: digest(1),
+    operationId: "12345678-abcd-abcd-abcd-123456789abc",
+    providerEffectIds: ["dpg-effect-1"],
+    qualifiedAt: "2026-09-07T00:00:00.000Z",
+    handoffSourceCommit: phase.handoffSourceCommit,
+    cutoverSourceCommit: phase.cutoverSourceCommit,
+    sourceTree: "b".repeat(40),
+    pendingEntriesSha256: renderHistorical89PendingDigest(
+      readHistorical89PendingIdentities(),
+    ),
+    authorizedBinaryArtifactDigest: digest(2),
+    baselineManifest: phase.baselineManifest,
+    targetManifest: phase.targetManifest,
+    originalLedgerDigest: renderManagedEvidenceDigest(ledger(89)),
+    catalogDigest: renderManagedEvidenceDigest(baselineCatalog),
+    topologyDigest: digest(3),
+    ownershipDigest: digest(4),
+    aclDigest: renderManagedEvidenceDigest(defaultAcl()),
+    membershipDigest: renderManagedEvidenceDigest([originalMembership]),
+    gateStatus: "closed",
+    externalFenceSha256: digest(5),
+    custodyDigest: renderManagedEvidenceDigest(gate),
+    ...overrides,
+  });
+  const input = (overrides: Record<string, unknown> = {}) => ({
+    admission: admission(),
+    ledger: ledger(89),
+    originalMembership: { ...originalMembership },
+    baselineCatalog,
+    defaultAcl: defaultAcl(),
+    creatorEvidence: creatorEvidence(),
+    gate: { ...gate },
+    ...overrides,
+  });
+  const aclRow = (
+    oid: string,
+    identity: string,
+    owner: string,
+    grantees: string[] = [owner],
+  ) => ({
+    oid,
+    source: "pg_proc",
+    identity,
+    aclType: "f",
+    ownerOid: "20",
+    owner,
+    raw: `{${owner}=X/${owner}}`,
+    effective: grantees.map((grantee) => ({
+      grantee,
+      granteeOid: grantee === "PUBLIC" ? "0" : "20",
+      grantor: owner,
+      grantorOid: "20",
+      privilege: "EXECUTE",
+      grantable: false,
+    })),
+  });
+  const before = {
+    version: 1,
+    rows: [
+      aclRow("900", 'public."CodexOAuthSecretNamespace"', "reviewrouter"),
+      aclRow(
+        "901",
+        "public.codex_oauth_secret_namespace_tombstone_guard()",
+        "reviewrouter",
+      ),
+      aclRow("902", "public.untouched()", "reviewrouter"),
+    ],
+  };
+  const after = () => ({
+    version: 1,
+    rows: [
+      aclRow(
+        "900",
+        'public."CodexOAuthSecretNamespace"',
+        "reviewrouter_release_schema_owner",
+      ),
+      aclRow(
+        "901",
+        "public.codex_oauth_secret_namespace_tombstone_guard()",
+        "reviewrouter_release_schema_owner",
+      ),
+      aclRow("902", "public.untouched()", "reviewrouter"),
+      aclRow(
+        "903",
+        "public.codex_oauth_workflow_compatibility_guard()",
+        "reviewrouter_release_schema_owner",
+      ),
+    ],
+  });
+
+  const entry = (
+    grantee: string,
+    privilege: string,
+    granteeOid: string,
+    grantable = false,
+  ) => ({
+    grantee,
+    granteeOid,
+    grantor: "reviewrouter",
+    grantorOid: "10",
+    privilege,
+    grantable,
+  });
+  const observation = {
+    version: 1,
+    database: "review_router_dimy",
+    allowConnections: true,
+    connectionLimit: -1,
+    owner: "reviewrouter",
+    raw: "{reviewrouter=CTc/reviewrouter,=Tc/reviewrouter,reviewrouter_api=c/reviewrouter}",
+    entries: [
+      entry("PUBLIC", "CONNECT", "0"),
+      entry("reviewrouter", "CONNECT", "16390"),
+      entry("reviewrouter_api", "CONNECT", "16391"),
+      entry("PUBLIC", "TEMPORARY", "0"),
+      entry("reviewrouter", "CREATE", "16390"),
+    ],
+    connectCapableRoles: [
+      {
+        role: "reviewrouter_api",
+        canLogin: true,
+        superuser: false,
+        writesMigratedTables: true,
+      },
+    ],
+    backends: [],
+  };
+
+  const preconditions = {
+    recovery: {
+      recoveryIdentitySha256: admission().recoveryIdentitySha256,
+      artifactDigest: `sha256:${"b".repeat(64)}`,
+      qualifiedAt: "2026-09-07T00:00:00.000Z",
+      restoreVerified: true,
+    },
+    admission: {
+      status: "closed",
+      connectAclDigest: renderManagedEvidenceDigest(observation),
+      restrictedAt: "2026-09-07T00:01:00.000Z",
+    },
+    automation: {
+      automaticMigrationsDisabled: true,
+      declaredServices: [
+        {
+          serviceId: "srv-d7s6hgbeo5us73djlp00",
+          autoDeploy: "no",
+          suspended: "suspended",
+        },
+      ],
+    },
+    fence: {
+      externalFenceSha256: admission().externalFenceSha256,
+      holder: "release-operator",
+      scope: ["srv-d7s6hgbeo5us73djlp00"],
+      durable: true,
+      survivesCoordinatorDeath: true,
+      establishedAt: "2026-09-07T00:00:30.000Z",
+    },
+  };
+
+  const planInput = () => ({
+    ...input(),
+    connectAcl: structuredClone(observation),
+    preconditions: structuredClone(preconditions),
+    coordinates: { epoch: 1, generation: 1, nonce: "0".repeat(32) },
+    reviewedTerminalCatalog: baselineCatalog,
+    reviewedTerminalCatalogDigest: renderManagedEvidenceDigest(baselineCatalog),
+    terminalCatalogProvenance: "disposable-rehearsal",
+  });
+
+  it("binds the complete original CONNECT observation and preserves its grantor", () => {
+    const supplied = planInput();
+    const original = structuredClone(supplied.connectAcl);
+    // Canonical hashing ignores object key insertion order.
+    supplied.connectAcl = Object.fromEntries(
+      Object.entries(supplied.connectAcl).reverse(),
+    ) as typeof supplied.connectAcl;
+    const plan = planHistorical89InPlaceOperation(supplied as never);
+    expect(plan.boundary.connectAclDigest).toBe(
+      renderManagedEvidenceDigest(original),
+    );
+    expect(plan.admissionRestoreSql).toContain(
+      'GRANT CONNECT ON DATABASE "review_router_dimy" TO "reviewrouter_api" GRANTED BY "reviewrouter";',
+    );
+    expect(supplied.connectAcl).toEqual(original);
+    expect(plan.authorization.authorizesProductionMutation).toBe(false);
+  });
+
+  it("rejects a well-formed digest for a different CONNECT observation", () => {
+    const supplied = planInput();
+    supplied.preconditions.admission.connectAclDigest = digest(9);
+    expect(() => planHistorical89InPlaceOperation(supplied as never)).toThrow(
+      "render_historical89_operation_rejected:connect_acl_binding",
+    );
+  });
+
+  it.each([
+    [
+      "grantor",
+      {
+        entries: observation.entries.map((e) => ({
+          ...e,
+          grantor: "postgres",
+        })),
+      },
+    ],
+    [
+      "grantor OID",
+      { entries: observation.entries.map((e) => ({ ...e, grantorOid: "11" })) },
+    ],
+    ["raw ACL", { raw: null }],
+    ["connection limit", { connectionLimit: 10 }],
+  ] as const)(
+    "rejects changed %s under the original digest",
+    (_name, change) => {
+      const supplied = planInput();
+      expect(() =>
+        planHistorical89InPlaceOperation({
+          ...supplied,
+          connectAcl: { ...supplied.connectAcl, ...change },
+        } as never),
+      ).toThrow("render_historical89_operation_rejected:connect_acl_binding");
+    },
+  );
+
+  const committedEvidence = () => {
+    const plan = planHistorical89InPlaceOperation(planInput() as never);
+    const currentPermit = {
+      ...plan.binding,
+      kind: phase.kind,
+      admissionIdentityDigest: plan.identityDigest,
+      terminalCatalogDigest: plan.reviewedTerminalCatalogDigest,
+      epoch: "1",
+      generation: "1",
+      nonce: plan.coordinates.nonce,
+      state: "terminal",
+    };
+    const receipt = {
+      kind: phase.kind,
+      operationId: plan.binding.operationId,
+      epoch: "1",
+      generation: "1",
+      nonce: plan.coordinates.nonce,
+      ledgerManifest: phase.targetManifest,
+      terminalCatalogDigest: plan.reviewedTerminalCatalogDigest,
+      effectFingerprint: "",
+      backendPid: 42,
+      transactionId: "123",
+      recordedAt: "2026-09-08T00:00:00.000Z",
+      permitState: "terminal",
+    };
+    receipt.effectFingerprint = `sha256:${createHash("sha256")
+      .update(
+        [
+          receipt.kind,
+          receipt.operationId,
+          plan.identityDigest,
+          plan.binding.systemIdentifier,
+          plan.binding.databaseOid,
+          plan.binding.databaseName,
+          plan.binding.recoveryIdentitySha256,
+          plan.binding.externalFenceSha256,
+          receipt.generation,
+          receipt.epoch,
+          receipt.nonce,
+          receipt.ledgerManifest,
+          receipt.terminalCatalogDigest,
+        ].join("\n"),
+      )
+      .digest("hex")}`;
+    return {
+      plan,
+      backendState: "terminated",
+      rollbackConfirmed: false,
+      ledger: ledger(96),
+      terminalCatalog: baselineCatalog,
+      gate,
+      memberships: [originalMembership],
+      originalMembership,
+      aclDelta: assertHistorical89InPlaceAclDelta({
+        baseline: before,
+        terminal: after(),
+        creators: ["reviewrouter"],
+      }),
+      receipt,
+      currentPermit,
+      fenceHeld: true,
+    };
+  };
+
+  it("reconciles a verified receipt with the exact current terminal permit", () => {
+    const evidence = committedEvidence();
+    expect(reconcileHistorical89InPlaceOperation(evidence)).toEqual({
+      decision: "reconciled-without-replay",
+      replay: false,
+      continueOperation: false,
+      requiresSameAuthorityOperation: true,
+      gate: "closed",
+      effectFingerprint: evidence.receipt.effectFingerprint,
+      reasons: [],
+    });
+  });
+
+  it.each([null, undefined, {}, { extra: true }])(
+    "fences a committed schema and valid receipt with malformed permit %#",
+    (currentPermit) => {
+      expect(
+        reconcileHistorical89InPlaceOperation({
+          ...committedEvidence(),
+          currentPermit,
+        } as never),
+      ).toMatchObject({
+        decision: "fenced",
+        replay: false,
+        continueOperation: false,
+        gate: "closed",
+        reasons: ["current_permit_untrusted"],
+      });
+    },
+  );
+
+  it.each([
+    ["state", "open"],
+    ["state", "closed"],
+    ["state", "consumed"],
+    ["epoch", "2"],
+    ["epoch", 1],
+    ["generation", "2"],
+    ["generation", 1],
+    ["nonce", "1".repeat(32)],
+    ["kind", "other"],
+    ["operationId", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"],
+    ["systemIdentifier", "7300000000000000002"],
+    ["databaseOid", "16402"],
+    ["databaseName", "other"],
+    ["recoveryIdentitySha256", digest(9)],
+    ["externalFenceSha256", digest(9)],
+    ["admissionIdentityDigest", digest(9)],
+    ["terminalCatalogDigest", digest(9)],
+    ["extra", true],
+  ] as const)(
+    "fences a committed receipt with mismatched permit %s=%s",
+    (key, value) => {
+      const evidence = committedEvidence();
+      expect(
+        reconcileHistorical89InPlaceOperation({
+          ...evidence,
+          currentPermit: { ...evidence.currentPermit, [key]: value },
+        }),
+      ).toMatchObject({
+        decision: "fenced",
+        replay: false,
+        continueOperation: false,
+        gate: "closed",
+        reasons: ["current_permit_untrusted"],
+      });
+    },
+  );
+
+  it("keeps receipt verification mandatory with a matching terminal permit", () => {
+    const evidence = committedEvidence();
+    for (const receipt of [
+      null,
+      { ...evidence.receipt, effectFingerprint: digest(9) },
+      { ...evidence.receipt, permitState: "open" },
+    ])
+      expect(
+        reconcileHistorical89InPlaceOperation({ ...evidence, receipt }),
+      ).toMatchObject({
+        decision: "fenced",
+        replay: false,
+        continueOperation: false,
+        gate: "closed",
+      });
+  });
+
+  it("still requires confirmed rollback, no receipt and the exact open permit to resume", () => {
+    const committed = committedEvidence();
+    const rollback = {
+      ...committed,
+      ledger: ledger(89),
+      rollbackConfirmed: true,
+      receipt: null,
+      currentPermit: { ...committed.currentPermit, state: "open" },
+    };
+    expect(reconcileHistorical89InPlaceOperation(rollback)).toMatchObject({
+      decision: "resume-same-operation",
+      replay: false,
+      continueOperation: true,
+      requiresPermitEpochAdvance: true,
+      gate: "closed",
+      reasons: [],
+    });
+    for (const change of [
+      { rollbackConfirmed: false },
+      { receipt: committed.receipt },
+      { currentPermit: committed.currentPermit },
+      { currentPermit: null },
+      { currentPermit: { ...rollback.currentPermit, epoch: "2" } },
+    ])
+      expect(
+        reconcileHistorical89InPlaceOperation({ ...rollback, ...change }),
+      ).toMatchObject({
+        decision: "fenced",
+        replay: false,
+        continueOperation: false,
+        gate: "closed",
+      });
   });
 });
