@@ -208,6 +208,15 @@ describe("historical89 execution boundary", () => {
         fence: { ...fleet.fence, scope: [otherService, ...fleet.fence.scope] },
       }),
     ).not.toThrow();
+    const sparseScope = [otherService, "removed"];
+    delete sparseScope[1];
+    Object.assign(sparseScope, { unexpected: true });
+    expect(() =>
+      assertHistorical89ExecutionPreconditions({
+        ...fleet,
+        fence: { ...fleet.fence, scope: sparseScope },
+      }),
+    ).toThrow("fence_not_durable");
     for (const scope of [
       fleet.fence.scope,
       [otherService, otherService],
