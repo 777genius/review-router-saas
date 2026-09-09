@@ -474,6 +474,7 @@ export class ExecuteReviewV2PublicationOperation {
           finalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
           finalReason: "publication_effect_gate_disabled",
           lastErrorCode: "publication_effect_gate_disabled",
+          noEffectCapability: capability,
         });
       }
       try {
