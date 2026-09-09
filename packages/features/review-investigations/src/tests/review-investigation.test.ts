@@ -64,6 +64,91 @@ const inventorySubject = "inventory:canonical";
 const changedSubject = "src/service.ts@head";
 
 describe("review investigation in-memory vertical slice", () => {
+  it("reconciles concurrent creates and rejects stale adoption at the store boundary", async () => {
+    const harness = createHarness();
+    const command = openCommand("concurrent-open-a");
+    const results = await Promise.all([
+      harness.open.execute(command),
+      harness.open.execute({ ...command, commandId: "concurrent-open-b" }),
+    ]);
+    expect(results[0]).toEqual(results[1]);
+    const before = await harness.store.findById(results[0]!.investigationId);
+    const adopt = harness.store.adopt.bind(harness.store);
+    vi.spyOn(harness.store, "adopt").mockImplementation(async (input) => {
+      harness.authority.verdict =
+        InvestigationExecutionAuthorityVerdict.Superseded;
+      return adopt(input);
+    });
+    await expect(
+      harness.open.execute({ ...command, commandId: "stale-adopt" }),
+    ).rejects.toThrow("investigation_execution_superseded");
+    expect(await harness.store.findById(results[0]!.investigationId)).toEqual(
+      before,
+    );
+  });
+
+  it("rejects currency lost immediately before create without writing a target", async () => {
+    const harness = createHarness();
+    const before = harness.store.exportSnapshot();
+    const commit = harness.store.commit.bind(harness.store);
+    vi.spyOn(harness.store, "commit").mockImplementation(async (input) => {
+      harness.authority.verdict =
+        InvestigationExecutionAuthorityVerdict.Superseded;
+      return commit(input);
+    });
+    await expect(
+      harness.open.execute(openCommand("stale-create")),
+    ).rejects.toThrow("investigation_execution_superseded");
+    expect(harness.store.exportSnapshot()).toBe(before);
+  });
+
+  it("rejects incompatible policy, contract, manifest, and seed without attaching a receipt", async () => {
+    const harness = createHarness();
+    const command = openCommand("compatibility-create");
+    const opened = await harness.open.execute(command);
+    const before = await harness.store.findById(opened.investigationId);
+    const incompatible: OpenReviewInvestigationCommand[] = [
+      {
+        ...command,
+        policy: {
+          ...command.policy,
+          maxSemanticTurns: command.policy.maxSemanticTurns + 1,
+        },
+      },
+      {
+        ...command,
+        contract: { ...command.contract, producerReleaseId: "other-release" },
+      },
+      {
+        ...command,
+        investigationManifestCanonicalJson: '{"other":true}',
+        investigationManifestHash:
+          await harness.digest.digestUtf8('{"other":true}'),
+      },
+      {
+        ...command,
+        seedObligations: [
+          ...command.seedObligations,
+          {
+            ...command.seedObligations[1]!,
+            canonicalSubject: "src/extra.ts@head",
+          },
+        ],
+      },
+    ];
+    for (const [index, candidate] of incompatible.entries()) {
+      await expect(
+        harness.open.execute({
+          ...candidate,
+          commandId: `incompatible-${index}`,
+        }),
+      ).rejects.toThrow(/investigation_open_(identity|seed)_conflict/);
+    }
+    expect(await harness.store.findById(opened.investigationId)).toEqual(
+      before,
+    );
+  });
+
   it("accepts the inclusive portable turn envelope boundary", async () => {
     const harness = createHarness();
     const opened = await harness.open.execute(openCommand("maximum-turn"));
@@ -631,6 +716,42 @@ describe("review investigation in-memory vertical slice", () => {
         (item) => item.canonicalSubject === changedSubject,
       ),
     ).toBe(false);
+    const adoptionCommand: OpenReviewInvestigationCommand = {
+      ...targetOpen,
+      commandId: "recording-open-replayed-target",
+      revision: targetRevision,
+      executionId: "execution-target",
+      workSlotId: "slot-target",
+      providerStrategyId: "strategy-target",
+      seedObligations: [
+        targetOpen.seedObligations[0]!,
+        {
+          kind: InvestigationObligationKind.TestEvidence,
+          canonicalSubject: targetOnlySubject,
+          canonicalRequirement: "read complete target test evidence",
+          riskPriority: 70,
+        },
+      ],
+      initialReceipts: [],
+    };
+    expect(await harness.open.execute(adoptionCommand)).toEqual(replayed);
+    expect(await harness.open.execute(adoptionCommand)).toEqual(replayed);
+    expect(await harness.store.findById(replayed.investigationId)).toEqual(
+      replayedTarget,
+    );
+    await expect(
+      harness.open.execute({
+        ...adoptionCommand,
+        providerStrategyId: "wrong-strategy",
+      }),
+    ).rejects.toThrow("investigation_idempotency_conflict");
+    await expect(
+      harness.open.execute({
+        ...adoptionCommand,
+        commandId: "incompatible-adopt",
+        providerStrategyId: "wrong-strategy",
+      }),
+    ).rejects.toThrow("investigation_open_identity_conflict");
     const replayedPlan = await harness.plan.execute({
       commandId: "plan-selective-replay",
       investigationId: replayed.investigationId,

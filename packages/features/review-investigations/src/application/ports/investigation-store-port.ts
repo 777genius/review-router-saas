@@ -40,6 +40,13 @@ export type InvestigationStoreCommitGuard =
     }>
   | Readonly<{
       kind: InvestigationStoreCommitGuardKind.ExecutionAuthority;
+      /** Invoked under the store lock before a new write. A transactional
+       * adapter supplies its fenced verdict; the callback must use it instead
+       * of opening another authority read. Without a verdict (memory adapter),
+       * the callback checks application authority under the memory lock. */
+      requireCurrentExecution?: (
+        transactionalVerdict?: InvestigationExecutionAuthorityVerdict,
+      ) => Promise<void>;
       expectedVerdict: InvestigationExecutionAuthorityVerdict;
       resultAdmission?: TurnResultAdmissionKind;
       admittedAt?: string;
@@ -94,6 +101,19 @@ export type InvestigationStoreTransition =
   | Readonly<{ kind: InvestigationStoreTransitionKind.Concluded }>;
 
 export interface InvestigationStorePort {
+  /** Attach only a command receipt, fencing the validated snapshot. Never mutate
+   * the aggregate or publish an outbox effect. Check currency inside the lock;
+   * persistent adapters also check their transactional execution authority. */
+  adopt(input: {
+    readonly investigation: ReviewInvestigation;
+    readonly expectedVersion: number;
+    readonly commandId: string;
+    readonly commandHash: string;
+    /** Same verdict-consumption contract as the ExecutionAuthority guard. */
+    readonly requireCurrentExecution: (
+      transactionalVerdict?: InvestigationExecutionAuthorityVerdict,
+    ) => Promise<void>;
+  }): Promise<InvestigationStoreCommitResult>;
   restoreCommand(input: {
     readonly commandId: string;
     readonly commandHash: string;
