@@ -7,6 +7,10 @@ on:
         description: Exact protected main commit to run this against
         required: true
         type: string
+      runner_label:
+        description: Unique label of the isolated single-job runner prepared for this operation
+        required: true
+        type: string
       verification_operation_id:
         description: Original retained operation ID for already96 verification (blank for a new operation)
         required: false
@@ -40,6 +44,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REQUIRED_ENVIRONMENT: production
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RUNNER_LABEL: ${{ inputs.runner_label }}
           REVIEW_ROUTER_RELEASE_APPROVAL_MODE: ${{ vars.REVIEW_ROUTER_RELEASE_APPROVAL_MODE }}
         run: |
           set -euo pipefail
@@ -54,6 +59,8 @@ jobs:
           const fail = (reason) => {
             throw new Error(`historical89_trust_rejected:${reason}`);
           };
+          if (!/^rr-h89-[a-f0-9]{32}$/.test(required("RUNNER_LABEL")))
+            fail("runner_label");
           const repository = required("GITHUB_REPOSITORY");
           const sha = required("GITHUB_SHA").toLowerCase();
           const expectedSha = required("EXPECTED_SHA").toLowerCase();
@@ -105,12 +112,13 @@ jobs:
     name: run-historical89-inplace-operation
     needs: trust-bootstrap
     environment: production
-    runs-on: ubuntu-latest
+    # A single-job isolated runner mounts a NEW private host directory here.
+    runs-on: [self-hosted, linux, x64, "${{ inputs.runner_label }}"]
     timeout-minutes: 30
     permissions:
       contents: read
     env:
-      REVIEW_ROUTER_HISTORICAL89_OPERATION_DIRECTORY: ${{ runner.temp }}/historical89-private/operation
+      REVIEW_ROUTER_HISTORICAL89_OPERATION_DIRECTORY: /retained/operation
       REVIEW_ROUTER_HISTORICAL89_SOURCE_COMMIT: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
       # This is the executable being attested, NOT an output report.
       REVIEW_ROUTER_HISTORICAL89_ARTIFACT_PATH: ${{ github.workspace }}/scripts/run-historical89-inplace-operation.mjs
@@ -138,6 +146,9 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          mountpoint -q /retained
+          test -w /retained
+          test ! -e /retained/operation
           mkdir "$RUNNER_TEMP/historical89-private" "$RUNNER_TEMP/historical89-result"
           printf '%s\n' '{"outcome":"fenced-unresolved","reason":"operation_not_completed"}' > "$RUNNER_TEMP/historical89-result/result.json"
           # Optional encrypted diagnostics; never publish unencrypted private evidence.
@@ -223,10 +234,11 @@ jobs:
           RENDER_ALLOWLIST_BACKUP_PATH: /tmp/render-allowlist-backup.json
         run: node scripts/restore-render-db-access.mjs
 
-      # Journal contains exact SQL/transport requests and verification-<epoch>.request
-      # plus its .pin. Retain it encrypted, including partial/failing operations.
-      # Runner loss before upload still requires operator reconciliation; never replay
-      # with a new empty journal as recovery. Download/decrypt before 90-day expiry.
+      # Private diagnostics may contain sensitive transport details.
+      # Upload only an encrypted copy, including partial/failing operations.
+      # The authoritative journal remains on the host bind mount after runner loss.
+      # Do not mount a previous operation into a new public runner job.
+      # This optional archive covers diagnostics only, not journal durability.
       - name: Seal private operation evidence
         if: always() && steps.evidence.outcome == 'success'
         shell: bash
