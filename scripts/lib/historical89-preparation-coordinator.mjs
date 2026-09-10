@@ -364,7 +364,7 @@ export async function provisionHistorical89Reader(
       EXECUTE format('ALTER ROLE reviewrouter_operation_custody_reader PASSWORD %L',
         current_setting('reviewrouter.reader_verifier'));
       PERFORM set_config('reviewrouter.reader_verifier','',true);
-    EXCEPTION WHEN OTHERS THEN RAISE EXCEPTION 'reader_credential_failed';
+    EXCEPTION WHEN query_canceled OR OTHERS THEN RAISE EXCEPTION 'reader_credential_failed';
     END $credential$;`);
     await client.query("COMMIT;");
   } catch {
