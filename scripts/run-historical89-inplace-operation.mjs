@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// Source-qualified preparation and one-operation migration. All external proof
-// roots remain unregistered. A standalone restore report never authorizes effects.
+// Source-qualified preparation and one-operation migration. The reviewed bundle
+// pins the exact baseline, terminal state, and fleet; recovery is captured fresh
+// on retained storage only after that exact fleet is suspended and re-observed.
 import pg from "pg";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -22,7 +23,6 @@ import { renderManagedRuntimeGateSql } from "./lib/render-managed-workflow-cutov
 import {
   readReviewedHistorical89Bundle,
   readReviewedHistorical89BundleDigest,
-  readReviewedHistorical89ExternalRecovery,
   compareHistorical89Original,
   compareHistorical89PreparationStage,
   historical89OriginalDatabaseAcl,
@@ -65,6 +65,8 @@ import {
   provisionHistorical89Reader,
   createHistorical89Journal,
   createHistorical89Render,
+  captureHistorical89RetainedBackup,
+  verifyHistorical89RetainedBackup,
   readHistorical89Json as readJson,
   submitHistorical89Transition,
   historical89BackendSql,
@@ -179,11 +181,11 @@ export async function runHistorical89Operation({
   readerPassword,
   render,
   journal,
+  captureBackup,
   request,
 }) {
   const bundle = readReviewedHistorical89Bundle();
   const approvalReference = readReviewedHistorical89BundleDigest();
-  const recovery = readReviewedHistorical89ExternalRecovery(); // Before any DB/provider effect.
   if (
     Object.keys(request).sort().join() !== "artifactPath,sourceCommit" ||
     !/^[a-f0-9]{40}$/u.test(request.sourceCommit)
@@ -197,23 +199,10 @@ export async function runHistorical89Operation({
     request,
     approvalReference,
     artifactDigest,
-    recoveryIdentitySha256: recovery.recoveryIdentitySha256,
   });
   const fleet = [...bundle.preparation.fleet].sort((a, b) =>
     a.role.localeCompare(b.role, "en"),
   );
-  const assertWindow = () => {
-    const start = Date.parse(recovery.maintenance.startsAt);
-    const end = Date.parse(recovery.maintenance.expiresAt);
-    if (
-      !Number.isFinite(start) ||
-      !Number.isFinite(end) ||
-      Date.now() < start ||
-      Date.now() >= end
-    )
-      fail("maintenance_window_expired");
-  };
-  assertWindow();
   let client = await coordinator.open();
   const submit = (key, exact, execute) =>
     submitHistorical89Transition({
@@ -221,10 +210,7 @@ export async function runHistorical89Operation({
       journal,
       key,
       request: exact,
-      execute: (context) => {
-        assertWindow();
-        return execute(context);
-      },
+      execute,
     });
   try {
     const backend = await readJson(client, historical89BackendSql);
@@ -288,6 +274,11 @@ export async function runHistorical89Operation({
     }))
       if (!same(identity[key], value)) fail("durable_identity_conflict");
     let binding = journal.get("binding");
+    let recovery = journal.get("recovery");
+    const terminalResumeStarted = fleet.some((service) =>
+      journal.get(`${service.serviceId}.resume-intent`),
+    );
+    const admissionRestoreStarted = !!journal.get("admission-restore.request");
     const validateRetainedService = (service) => {
       const intent = journal.get(`${service.serviceId}.intent`);
       const result = journal.get(`${service.serviceId}.result`);
@@ -310,21 +301,22 @@ export async function runHistorical89Operation({
     for (const service of fleet)
       if (journal.get(`${service.serviceId}.result`))
         validateRetainedService(service);
-    const validateRetainedFence = () => {
+    const validateRetainedFence = async () => {
       const fence = journal.get("fence");
+      if (recovery) await verifyHistorical89RetainedBackup(journal, recovery);
       if (
+        !recovery ||
         !fence ||
         digest(fence) !== binding.externalFenceSha256 ||
         fence.operationId !== identity.operationId ||
-        !same(fence.maintenance, recovery.maintenance) ||
         !same(journal.get("recovery"), recovery) ||
-        binding.recoveryIdentitySha256 !== recovery.recoveryIdentitySha256 ||
+        binding.recoveryIdentitySha256 !== recovery.sha256 ||
         !same(
           binding,
           historical89InPlaceCustodyBinding({
             ...identity,
             externalFenceSha256: digest(fence),
-            recoveryIdentitySha256: recovery.recoveryIdentitySha256,
+            recoveryIdentitySha256: recovery.sha256,
           }),
         )
       )
@@ -338,11 +330,100 @@ export async function runHistorical89Operation({
       fleet.forEach((service, index) =>
         checkService(service, fence.fleet[index], true),
       );
-      assertWindow();
+    };
+    const effectiveDatabaseAcl = (observation) => {
+      const { raw: _raw, ...effective } =
+        historical89OriginalDatabaseAcl(observation);
+      return effective;
+    };
+    const restoreFleetAfterCommit = async (result) => {
+      try {
+        for (const service of fleet) {
+          journal.put(`${service.serviceId}.resume-intent`, {
+            operationId: identity.operationId,
+            serviceId: service.serviceId,
+            recoveryIdentitySha256: binding.recoveryIdentitySha256,
+          });
+          await render.resume(service.serviceId);
+        }
+        for (const service of fleet) {
+          let observed;
+          for (let poll = 0; poll < 6; poll++) {
+            observed = checkService(
+              service,
+              await render.getService(service.serviceId),
+            );
+            if (observed.suspended === "not_suspended") break;
+            if (poll < 5) await delay(250);
+          }
+          if (observed?.suspended !== "not_suspended")
+            fail("resume_unobserved");
+          journal.once(`${service.serviceId}.resume-result`, () => ({
+            observed,
+            observedAt: new Date().toISOString(),
+          }));
+        }
+        await submit(
+          admissionRestoreStarted
+            ? "admission-restore-after-rerestriction"
+            : "admission-restore",
+          { sql: plan.admissionRestoreSql, original: original.connectAcl },
+          async () => {
+            await client.query(plan.admissionRestoreSql);
+            const restored = await readJson(
+              client,
+              renderHistorical89ConnectAclSql,
+            );
+            if (
+              !same(
+                effectiveDatabaseAcl(restored),
+                effectiveDatabaseAcl(original.connectAcl),
+              )
+            )
+              fail("admission_restore_unverified");
+            return { restored: true };
+          },
+        );
+        return result;
+      } catch (error) {
+        const unresolved = [];
+        for (const service of fleet) {
+          journal.once(
+            `${service.serviceId}.resume-compensation-intent`,
+            () => ({
+              operationId: identity.operationId,
+              serviceId: service.serviceId,
+            }),
+          );
+          try {
+            await render.suspend(service.serviceId);
+            let observed;
+            for (let poll = 0; poll < 6; poll++) {
+              observed = checkService(
+                service,
+                await render.getService(service.serviceId),
+              );
+              if (observed.suspended === "suspended") break;
+              if (poll < 5) await delay(250);
+            }
+            if (observed?.suspended !== "suspended")
+              throw new Error("compensation_unobserved");
+            journal.once(
+              `${service.serviceId}.resume-compensation-result`,
+              () => ({ observed }),
+            );
+          } catch {
+            unresolved.push(service.serviceId);
+          }
+        }
+        if (unresolved.length)
+          fail(`resume_compensation_partial:${unresolved.join(",")}`);
+        throw error;
+      }
     };
     if (binding) {
-      validateRetainedFence();
-      await observeFleet(render, fleet);
+      await validateRetainedFence();
+      if (!terminalResumeStarted) await observeFleet(render, fleet);
     }
     const checkpoint = async (key, parts, stage, binding) =>
       submit(
@@ -448,6 +529,8 @@ export async function runHistorical89Operation({
       )
         fail("transition_observation");
     };
+    if (admissionRestoreStarted)
+      await restrictAdmission("terminal-rerestriction");
     await provisionHistorical89Reader(
       client,
       identity,
@@ -498,7 +581,6 @@ export async function runHistorical89Operation({
               attemptedAt: new Date().toISOString(),
             });
             try {
-              assertWindow();
               await render.suspend(key);
               journal.put(`${attempt}.response`, {
                 outcome: "acknowledged-202",
@@ -542,9 +624,20 @@ export async function runHistorical89Operation({
         );
       }
       const fleetNow = await observeFleet(render, fleet);
+      await restrictAdmission();
+      await client.query(renderHistorical89FleetQuiescenceGuardSql);
+      recovery = await captureBackup(identity);
+      await client.query(renderHistorical89FleetQuiescenceGuardSql);
+      if (
+        recovery?.format !== "postgresql-custom-gpg" ||
+        !/^sha256:[a-f0-9]{64}$/u.test(recovery?.sha256 ?? "") ||
+        !Number.isSafeInteger(recovery?.bytes) ||
+        recovery.bytes <= 0
+      )
+        fail("backup_metadata");
       const fence = journal.once("fence", () => ({
         operationId: identity.operationId,
-        maintenance: recovery.maintenance,
+        holder: `coordinator:${identity.operationId}`,
         fleet: fleetNow,
         services: fleet.map((s) => ({
           serviceId: s.serviceId,
@@ -553,9 +646,8 @@ export async function runHistorical89Operation({
         })),
         establishedAt: new Date().toISOString(),
       }));
-      journal.put("recovery", recovery);
       const evidence = {
-        recoveryIdentitySha256: recovery.recoveryIdentitySha256,
+        recoveryIdentitySha256: recovery.sha256,
         externalFenceSha256: digest(fence),
       };
       for (const [kind, value] of Object.entries(evidence))
@@ -569,9 +661,9 @@ export async function runHistorical89Operation({
       // Binding publication is intent, not proof of a committed Finalize.
       journal.put("binding", binding);
     }
-    validateRetainedFence();
+    await validateRetainedFence();
     validatePreparationEvidence();
-    await observeFleet(render, fleet);
+    if (!terminalResumeStarted) await observeFleet(render, fleet);
     if (!journal.get("finalize.complete")) {
       const expectedRevision = journal.once("finalize-revision", () =>
         Number(row.revision),
@@ -599,59 +691,67 @@ export async function runHistorical89Operation({
           digest(journal.get(`${service.serviceId}.result`))
       )
         fail("final_service_evidence");
-    await observeFleet(render, fleet);
-    const restrictionSql = renderHistorical89AdmissionRestrictionSql(
-      original.connectAcl,
-    );
-    await submit(
-      "restriction",
-      { sql: restrictionSql, original: original.connectAcl },
-      async () => {
-        const actual = await readJson(client, renderHistorical89ConnectAclSql);
-        if (
-          same(
-            historical89OriginalDatabaseAcl(actual),
-            historical89OriginalDatabaseAcl(original.connectAcl),
-          )
-        ) {
-          await client.query(restrictionSql);
-        } else {
-          const acl = assertHistorical89OriginalConnectAcl(original.connectAcl);
-          const roles = await readJson(
+    if (!terminalResumeStarted) await observeFleet(render, fleet);
+    async function restrictAdmission(transitionKey = "restriction") {
+      const restrictionSql = renderHistorical89AdmissionRestrictionSql(
+        original.connectAcl,
+      );
+      await submit(
+        transitionKey,
+        { sql: restrictionSql, original: original.connectAcl },
+        async () => {
+          const actual = await readJson(
             client,
-            "SELECT jsonb_build_object('reader',(SELECT oid::text FROM pg_roles WHERE rolname='reviewrouter_operation_custody_reader'),'owner',(SELECT oid::text FROM pg_roles WHERE rolname='reviewrouter'))",
+            renderHistorical89ConnectAclSql,
           );
-          const entries = original.connectAcl.entries.filter(
-            (entry) => !acl.withdraw.some((w) => same(w, entry)),
-          );
-          entries.push({
-            grantee: readerRole,
-            granteeOid: roles.reader,
-            grantor: "reviewrouter",
-            grantorOid: roles.owner,
-            privilege: "CONNECT",
-            grantable: false,
-          });
-          const sort = (values) =>
-            [...values].sort(
-              (a, b) =>
-                a.privilege.localeCompare(b.privilege, "en") ||
-                Number(a.granteeOid) - Number(b.granteeOid) ||
-                Number(a.grantorOid) - Number(b.grantorOid),
-            );
           if (
-            !same(sort(actual.entries), sort(entries)) ||
-            actual.raw === null ||
-            ["database", "allowConnections", "connectionLimit", "owner"].some(
-              (key) => actual[key] !== original.connectAcl[key],
+            same(
+              effectiveDatabaseAcl(actual),
+              effectiveDatabaseAcl(original.connectAcl),
             )
-          )
-            fail("restriction_third_state");
-          await client.query(renderHistorical89SessionDrainSql);
-        }
-        return { restrictedAt: new Date().toISOString() };
-      },
-    );
+          ) {
+            await client.query(restrictionSql);
+          } else {
+            const acl = assertHistorical89OriginalConnectAcl(
+              original.connectAcl,
+            );
+            const roles = await readJson(
+              client,
+              "SELECT jsonb_build_object('reader',(SELECT oid::text FROM pg_roles WHERE rolname='reviewrouter_operation_custody_reader'),'owner',(SELECT oid::text FROM pg_roles WHERE rolname='reviewrouter'))",
+            );
+            const entries = original.connectAcl.entries.filter(
+              (entry) => !acl.withdraw.some((w) => same(w, entry)),
+            );
+            entries.push({
+              grantee: readerRole,
+              granteeOid: roles.reader,
+              grantor: "reviewrouter",
+              grantorOid: roles.owner,
+              privilege: "CONNECT",
+              grantable: false,
+            });
+            const sort = (values) =>
+              [...values].sort(
+                (a, b) =>
+                  a.privilege.localeCompare(b.privilege, "en") ||
+                  Number(a.granteeOid) - Number(b.granteeOid) ||
+                  Number(a.grantorOid) - Number(b.grantorOid),
+              );
+            if (
+              !same(sort(actual.entries), sort(entries)) ||
+              actual.raw === null ||
+              ["database", "allowConnections", "connectionLimit", "owner"].some(
+                (key) => actual[key] !== original.connectAcl[key],
+              )
+            )
+              fail("restriction_third_state");
+            await client.query(renderHistorical89SessionDrainSql);
+          }
+          return { restrictedAt: new Date().toISOString() };
+        },
+      );
+    }
+    await restrictAdmission();
     await authenticateReader(openReader, client, identity, binding);
     await client.query(renderHistorical89FleetQuiescenceGuardSql);
     let input = journal.get("plan-input");
@@ -689,9 +789,10 @@ export async function runHistorical89Operation({
         preconditions: {
           recovery: {
             recoveryIdentitySha256: binding.recoveryIdentitySha256,
-            artifactDigest: recovery.proofs.export.digest,
-            qualifiedAt: recovery.qualifiedAt,
-            restoreVerified: true,
+            artifactDigest: recovery.sha256,
+            capturedAt: recovery.capturedAt,
+            dumpReadable: true,
+            retained: true,
           },
           admission: {
             status: "closed",
@@ -709,7 +810,7 @@ export async function runHistorical89Operation({
           },
           fence: {
             externalFenceSha256: binding.externalFenceSha256,
-            holder: fence.maintenance.holder,
+            holder: fence.holder,
             scope: identity.serviceIds,
             durable: true,
             survivesCoordinatorDeath: true,
@@ -725,15 +826,23 @@ export async function runHistorical89Operation({
     // Durable plan inputs are never refreshed on restart. Re-observe and match
     // them before opening a permit, including non-CONNECT grants and the gate.
     const currentBaseline = await observe(client, bundle);
-    for (const [actual, expected] of [
-      [currentBaseline.catalog, input.baselineCatalog],
-      [currentBaseline.ledger, input.ledger],
-      [currentBaseline.defaultAcl, input.defaultAcl],
-      [currentBaseline.originalMembership, input.originalMembership],
-      [currentBaseline.gate, input.gate],
-      [currentBaseline.creatorEvidence, input.creatorEvidence],
-    ])
-      if (!same(actual, expected)) fail("persisted_baseline_changed");
+    const retainedTerminalRestart =
+      inspectHistorical89InPlaceLedger(currentBaseline.ledger).count ===
+        phase.targetCount &&
+      !!binding &&
+      journal
+        .keys("migration-")
+        .some((key) => key.endsWith(".attempt-0.start"));
+    if (!retainedTerminalRestart)
+      for (const [actual, expected] of [
+        [currentBaseline.catalog, input.baselineCatalog],
+        [currentBaseline.ledger, input.ledger],
+        [currentBaseline.defaultAcl, input.defaultAcl],
+        [currentBaseline.originalMembership, input.originalMembership],
+        [currentBaseline.gate, input.gate],
+        [currentBaseline.creatorEvidence, input.creatorEvidence],
+      ])
+        if (!same(actual, expected)) fail("persisted_baseline_changed");
     const saveVerification = (coordinates) => {
       const verification = {
         version: 1,
@@ -816,9 +925,8 @@ export async function runHistorical89Operation({
       } finally {
         await reader.end();
       }
-      validateRetainedFence();
-      await observeFleet(render, fleet);
-      assertWindow();
+      await validateRetainedFence();
+      if (!terminalResumeStarted) await observeFleet(render, fleet);
       const history = inspectHistorical89InPlaceLedger(actual.ledger);
       const aclDelta =
         history.count === phase.targetCount
@@ -920,10 +1028,10 @@ export async function runHistorical89Operation({
         }
         const result = await reconcile(migrationKey);
         if (result.decision === "reconciled-without-replay")
-          return {
+          return restoreFleetAfterCommit({
             outcome: "committed-96",
             receiptDigest: result.effectFingerprint,
-          };
+          });
         if (result.decision !== "resume-same-operation")
           return { outcome: "fenced-unresolved", reasons: result.reasons };
         const advance = journal.once(`epoch-${epoch}`, () => ({
@@ -944,9 +1052,9 @@ export async function runHistorical89Operation({
         )
       )
         fail("permit_coordinates");
-      validateRetainedFence();
+      await validateRetainedFence();
       await authenticateReader(openReader, client, identity, binding);
-      await observeFleet(render, fleet);
+      if (!terminalResumeStarted) await observeFleet(render, fleet);
       await submit(
         migrationKey,
         { sql: plan.transactionSql, coordinates: plan.coordinates },
@@ -957,7 +1065,10 @@ export async function runHistorical89Operation({
       );
       const result = await reconcile(migrationKey);
       return result.decision === "reconciled-without-replay"
-        ? { outcome: "committed-96", receiptDigest: result.effectFingerprint }
+        ? restoreFleetAfterCommit({
+            outcome: "committed-96",
+            receiptDigest: result.effectFingerprint,
+          })
         : { outcome: "fenced-unresolved", reasons: result.reasons };
     }
     fail("epoch_budget");
@@ -966,14 +1077,23 @@ export async function runHistorical89Operation({
   }
 }
 
-async function run() {
+export async function run({
+  databaseConnect = connect,
+  retainedOperation,
+} = {}) {
   const mainUrl = requireEnv("REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL");
-  const client = await connect(mainUrl);
+  const operationDirectory = requireEnv(
+    "REVIEW_ROUTER_HISTORICAL89_OPERATION_DIRECTORY",
+  );
+  const client = await databaseConnect(mainUrl);
   try {
     const history = inspectHistorical89InPlaceLedger(
       await readHistorical89One(client, renderManagedLedgerSql),
     );
-    if (history.count === phase.targetCount) {
+    if (
+      history.count === phase.targetCount &&
+      !existsSync(operationDirectory)
+    ) {
       let reader;
       try {
         const verification = parseHistorical89Verification(
@@ -1000,19 +1120,21 @@ async function run() {
         if (reader) await reader.end().catch(() => {});
       }
     }
-    if (history.count !== phase.baselineCount) fail("unexpected_ledger_state");
+    if (
+      history.count !== phase.baselineCount &&
+      !(history.count === phase.targetCount && existsSync(operationDirectory))
+    )
+      fail("unexpected_ledger_state");
   } finally {
     await client.end();
   }
+  if (retainedOperation) return retainedOperation();
   // Reject absent review before even constructing a mutable adapter.
   const bundle = readReviewedHistorical89Bundle();
-  readReviewedHistorical89ExternalRecovery();
   const readerUrl = requireEnv(
     "REVIEW_ROUTER_RELEASE_MIGRATION_CUSTODY_READER_DATABASE_URL",
   );
-  const journal = createHistorical89Journal(
-    requireEnv("REVIEW_ROUTER_HISTORICAL89_OPERATION_DIRECTORY"),
-  );
+  const journal = createHistorical89Journal(operationDirectory);
   const render = createHistorical89Render({
     token: requireEnv("RENDER_API_KEY"),
     journal,
@@ -1025,6 +1147,13 @@ async function run() {
     readerPassword: decodeURIComponent(new URL(readerUrl).password),
     render,
     journal,
+    captureBackup: (identity) =>
+      captureHistorical89RetainedBackup({
+        databaseUrl: mainUrl,
+        journal,
+        operationId: identity.operationId,
+        retentionKey: requireEnv("REVIEW_ROUTER_HISTORICAL89_RETENTION_KEY"),
+      }),
     request: {
       sourceCommit: requireEnv("REVIEW_ROUTER_HISTORICAL89_SOURCE_COMMIT"),
       artifactPath: requireEnv("REVIEW_ROUTER_HISTORICAL89_ARTIFACT_PATH"),

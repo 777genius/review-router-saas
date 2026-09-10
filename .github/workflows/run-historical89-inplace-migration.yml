@@ -19,6 +19,11 @@ on:
         description: Independent sha256 digest of exact retained verification request bytes
         required: false
         type: string
+      resume_existing_operation:
+        description: Resume the retained operation after a coordinator crash
+        required: true
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -148,15 +153,21 @@ jobs:
           umask 077
           mountpoint -q /retained
           test -w /retained
-          test ! -e /retained/operation
+          if [[ "${{ inputs.resume_existing_operation }}" == "true" ]]; then
+            test -d /retained/operation
+            test -f /retained/reader-url
+          else
+            test ! -e /retained/operation
+            test ! -e /retained/reader-url
+          fi
+          command -v pg_dump >/dev/null
+          command -v pg_restore >/dev/null
+          command -v gpg >/dev/null
+          [[ "$RETENTION_KEY" =~ ^[a-fA-F0-9]{64}$ ]]
           mkdir "$RUNNER_TEMP/historical89-private" "$RUNNER_TEMP/historical89-result"
           printf '%s\n' '{"outcome":"fenced-unresolved","reason":"operation_not_completed"}' > "$RUNNER_TEMP/historical89-result/result.json"
-          # Optional encrypted diagnostics; never publish unencrypted private evidence.
-          if [[ -n "$RETENTION_KEY" ]]; then
-            [[ "$RETENTION_KEY" =~ ^[a-fA-F0-9]{64}$ ]]
-            printf '%s' probe | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --symmetric --cipher-algo AES256 --output "$RUNNER_TEMP/historical89-private/probe.gpg" 3<<<"$RETENTION_KEY"
-            rm "$RUNNER_TEMP/historical89-private/probe.gpg"
-          fi
+          printf '%s' probe | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --symmetric --cipher-algo AES256 --output "$RUNNER_TEMP/historical89-private/probe.gpg" 3<<<"$RETENTION_KEY"
+          rm "$RUNNER_TEMP/historical89-private/probe.gpg"
           node --input-type=module <<'NODE'
           import { writeFileSync } from "node:fs";
           import { createHash } from "node:crypto";
@@ -186,10 +197,17 @@ jobs:
             constants,
             fsyncSync,
             openSync,
+            readFileSync,
             writeFileSync,
           } from "node:fs";
           const source = process.env.MIGRATION_DATABASE_URL;
           if (!source) throw new Error("historical89_migration_url_missing");
+          if (${{ inputs.resume_existing_operation }}) {
+            const value = readFileSync("/retained/reader-url", "utf8");
+            process.stdout.write(`::add-mask::${value}\n`);
+            appendFileSync(process.env.GITHUB_ENV, `REVIEW_ROUTER_RELEASE_MIGRATION_CUSTODY_READER_DATABASE_URL=${value}\n`, { mode: 0o600 });
+            process.exit(0);
+          }
           const reader = new URL(source);
           reader.username = "reviewrouter_operation_custody_reader";
           const password = randomBytes(32).toString("base64url");
@@ -239,6 +257,7 @@ jobs:
         env:
           REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          REVIEW_ROUTER_HISTORICAL89_RETENTION_KEY: ${{ secrets.REVIEW_ROUTER_HISTORICAL89_RETENTION_KEY }}
         run: |
           set -euo pipefail
           umask 077

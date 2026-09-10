@@ -384,8 +384,9 @@ END $fleet$;`;
 const recoveryShape = shapeOf([
   "recoveryIdentitySha256",
   "artifactDigest",
-  "qualifiedAt",
-  "restoreVerified",
+  "capturedAt",
+  "dumpReadable",
+  "retained",
 ]);
 const admissionShape = shapeOf(["status", "connectAclDigest", "restrictedAt"]);
 const automationShape = shapeOf([
@@ -421,8 +422,9 @@ export function assertHistorical89ExecutionPreconditions(input) {
   if (
     !digest(recovery.recoveryIdentitySha256) ||
     !digest(recovery.artifactDigest) ||
-    !instant(recovery.qualifiedAt) ||
-    recovery.restoreVerified !== true
+    !instant(recovery.capturedAt) ||
+    recovery.dumpReadable !== true ||
+    recovery.retained !== true
   )
     fail("recovery_unqualified");
   if (keysOf(admission) !== admissionShape) fail("admission_shape");

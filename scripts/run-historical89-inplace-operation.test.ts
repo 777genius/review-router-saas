@@ -40,7 +40,6 @@ import {
 // tests; none of these fixtures is installed into the source registry.
 const fixtures = vi.hoisted(() => ({
   bundle: null as any,
-  recovery: null as any,
   checkpoints: [] as string[],
   mismatch: "",
   ledgerCount: 89,
@@ -66,11 +65,6 @@ vi.mock("./lib/render-historical89-admission.mjs", async (original) => {
     ...real,
     readReviewedHistorical89Bundle: () => fixtures.bundle,
     readReviewedHistorical89BundleDigest: () => `sha256:${"b".repeat(64)}`,
-    readReviewedHistorical89ExternalRecovery: () => {
-      if (!fixtures.recovery)
-        throw new Error("qualified_external_recovery_missing");
-      return fixtures.recovery;
-    },
     compareHistorical89Original: () => {
       fixtures.checkpoints.push("original");
       if (fixtures.mismatch === "original")
@@ -122,6 +116,7 @@ vi.mock("./lib/render-historical89-operation.mjs", async (original) => {
           admissionIdentityDigest: digest(input.admission),
         }),
         transactionSql: "TEST_MIGRATION",
+        admissionRestoreSql: "TEST_ADMISSION_RESTORE",
         effectReadSql: renderManagedOperationEffectReadSql(binding),
       };
     },
@@ -147,7 +142,10 @@ vi.mock("./lib/render-historical89-operation.mjs", async (original) => {
     },
   };
 });
-import { runHistorical89Operation } from "./run-historical89-inplace-operation.mjs";
+import {
+  run,
+  runHistorical89Operation,
+} from "./run-historical89-inplace-operation.mjs";
 
 const directories: string[] = [];
 afterEach(() =>
@@ -197,18 +195,7 @@ function setup() {
     },
     preparation: { fleet },
   };
-  fixtures.recovery = {
-    recoveryIdentitySha256: d,
-    proofs: { export: { digest: d } },
-    qualifiedAt: "2026-09-09T00:00:00.000Z",
-    maintenance: {
-      holder: "test",
-      reference: "test-window",
-      startsAt: "2000-01-01T00:00:00.000Z",
-      expiresAt: "2100-01-01T00:00:00.000Z",
-      serviceIds: fleet.map((s) => s.serviceId),
-    },
-  };
+  const backupBytes = Buffer.from("synthetic-encrypted-custom-dump");
   const events: string[] = [];
   const flags = {
     neverSuspended: false,
@@ -223,6 +210,10 @@ function setup() {
     lostPost: false,
     wrongOwner: false,
     configDrift: false,
+    materializeDefaultRestore: false,
+    backupCount: 0,
+    failBackup: false,
+    failResumeId: "",
   };
   let row: any;
   let permit: any = null;
@@ -444,7 +435,10 @@ function setup() {
             restricted = true;
             return { rows: [] };
           }
-          if (sql.includes("$fleet$")) return { rows: [] };
+          if (sql.includes("$fleet$")) {
+            events.push("fleet-guard");
+            return { rows: [] };
+          }
           if (
             sql.startsWith(
               "SELECT release_operation_custody.custody_open_operation(",
@@ -490,6 +484,14 @@ function setup() {
             return json(permit);
           }
           if (sql.includes("custody_current_permit(")) return json(permit);
+          if (
+            sql.startsWith(
+              "SELECT COALESCE(release_operation_custody.custody_read_effect(",
+            )
+          )
+            return json(
+              fixtures.ledgerCount === 96 ? { committed: true } : null,
+            );
           if (sql === "TEST_MIGRATION") {
             events.push("migration");
             if (flags.rollbackOnce && !flags.rolledBack) {
@@ -502,6 +504,12 @@ function setup() {
               flags.lost = true;
               throw new Error("lost reply");
             }
+            return { rows: [] };
+          }
+          if (sql === "TEST_ADMISSION_RESTORE") {
+            events.push("admission-restore");
+            restricted = false;
+            if (flags.materializeDefaultRestore) acl.raw = "{=c/reviewrouter}";
             return { rows: [] };
           }
           throw new Error(`unhandled fixture SQL: ${sql.slice(0, 100)}`);
@@ -563,6 +571,29 @@ function setup() {
       if (!flags.neverSuspended) suspended.add(id);
       if (flags.lostPost) throw new Error("POST reply lost");
     },
+    resume: async (id: string) => {
+      events.push(`${id}-resume`);
+      if (flags.failResumeId === id) throw new Error("resume failed");
+      suspended.delete(id);
+    },
+  };
+  const captureBackup = async (identity: any) => {
+    flags.backupCount++;
+    events.push("backup");
+    if (flags.failBackup) throw new Error("backup failed");
+    const backupPath = join(
+      directory,
+      `historical89-${identity.operationId}.dump.gpg`,
+    );
+    writeFileSync(backupPath, backupBytes, { flag: "wx" });
+    const recovery = {
+      format: "postgresql-custom-gpg",
+      bytes: backupBytes.byteLength,
+      sha256: `sha256:${createHash("sha256").update(backupBytes).digest("hex")}`,
+      capturedAt: "2026-09-09T00:00:00.000Z",
+    };
+    journal.put("recovery", recovery);
+    return recovery;
   };
   const run = () =>
     runHistorical89Operation({
@@ -571,6 +602,7 @@ function setup() {
       readerPassword: "synthetic-reader-secret",
       render,
       journal,
+      captureBackup,
       request: { sourceCommit: "e".repeat(40), artifactPath },
     });
   return {
@@ -580,18 +612,40 @@ function setup() {
     journal,
     artifactPath,
     suspended,
+    acl,
     arguments: {
       coordinator,
       openReader,
       readerPassword: "synthetic-reader-secret",
       render,
       journal,
+      captureBackup,
       request: { sourceCommit: "e".repeat(40), artifactPath },
     },
   };
 }
 
 describe("historical89 callable preparation orchestration", () => {
+  it("routes target-96 with an existing retained operation into reconciliation", async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "rr-historical89-cli-resume-"),
+    );
+    directories.push(directory);
+    process.env.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL =
+      "postgresql://synthetic.invalid/database";
+    process.env.REVIEW_ROUTER_HISTORICAL89_OPERATION_DIRECTORY = directory;
+    fixtures.ledgerCount = 96;
+    const retainedOperation = vi.fn(async () => ({ outcome: "committed-96" }));
+    const result = await run({
+      databaseConnect: async () => ({
+        query: async () => json([]),
+        end: async () => {},
+      }),
+      retainedOperation,
+    });
+    expect(result).toEqual({ outcome: "committed-96" });
+    expect(retainedOperation).toHaveBeenCalledOnce();
+  });
   it("resumes request-only migration with original coordinates after duplicate crashes", async () => {
     const test = setup();
     const put = test.journal.put;
@@ -620,15 +674,7 @@ describe("historical89 callable preparation orchestration", () => {
     expect(test.events.filter((e) => e === "migration")).toHaveLength(1);
     expect(test.events).not.toContain("epoch");
   });
-  it.each([
-    "resumed",
-    "owner",
-    "config",
-    "maintenance",
-    "fence",
-    "attempt",
-    "transport",
-  ])(
+  it.each(["resumed", "owner", "config", "fence", "attempt", "transport"])(
     "rejects persisted binding with changed %s before Finalize replay",
     async (change) => {
       const test = setup();
@@ -642,8 +688,6 @@ describe("historical89 callable preparation orchestration", () => {
       if (change === "resumed") test.suspended.clear();
       if (change === "owner") test.flags.wrongOwner = true;
       if (change === "config") test.flags.configDrift = true;
-      if (change === "maintenance")
-        fixtures.recovery.maintenance.holder = "changed";
       if (change === "fence") {
         const fence = test.journal.get("fence");
         fence.establishedAt = "changed";
@@ -698,23 +742,57 @@ describe("historical89 callable preparation orchestration", () => {
       expect(test.events.indexOf(`${id}-post`)).toBeLessThan(
         test.events.indexOf(`${id}-result-commit`),
       );
+      expect(test.events.indexOf(`${id}-result-commit`)).toBeLessThan(
+        test.events.indexOf("backup"),
+      );
     }
-    expect(test.events.indexOf("finalize-commit")).toBeLessThan(
-      test.events.indexOf("restrict"),
+    expect(test.flags.backupCount).toBe(1);
+    expect(test.events.indexOf("restrict")).toBeLessThan(
+      test.events.indexOf("backup"),
+    );
+    expect(
+      test.events.lastIndexOf("fleet-guard", test.events.indexOf("backup")),
+    ).toBeGreaterThan(test.events.indexOf("restrict"));
+    expect(
+      test.events.indexOf("fleet-guard", test.events.indexOf("backup") + 1),
+    ).toBeGreaterThan(test.events.indexOf("backup"));
+    expect(test.events.indexOf("backup")).toBeLessThan(
+      test.events.indexOf("migration"),
+    );
+    expect(test.journal.get("binding").recoveryIdentitySha256).toBe(
+      test.journal.get("recovery").sha256,
     );
     expect(test.events.indexOf("restrict")).toBeLessThan(
       test.events.indexOf("permit"),
     );
+    expect(test.events.indexOf("migration")).toBeLessThan(
+      test.events.indexOf("admission-restore"),
+    );
+    expect(test.events.indexOf("srv-api-resume")).toBeLessThan(
+      test.events.indexOf("admission-restore"),
+    );
     expect(test.flags.readerCount).toBeGreaterThanOrEqual(3);
     expect(test.journal.get("verification-1.pin").digest).toMatch(/^sha256:/);
   });
-  it("rejects unqualified external recovery before effects", async () => {
+  it("accepts materialized effective ACL after restoring an original null default", async () => {
     const test = setup();
-    fixtures.recovery = null;
-    await expect(test.run()).rejects.toThrow(
-      "qualified_external_recovery_missing",
+    test.acl.raw = null;
+    test.flags.materializeDefaultRestore = true;
+    await expect(test.run()).resolves.toMatchObject({
+      outcome: "committed-96",
+    });
+    expect(test.events).toContain("admission-restore");
+  });
+  it("keeps the exact fleet suspended when fresh backup capture fails", async () => {
+    const test = setup();
+    test.flags.failBackup = true;
+    await expect(test.run()).rejects.toThrow("backup failed");
+    expect(test.flags.backupCount).toBe(1);
+    expect(test.suspended).toEqual(
+      new Set(["srv-api", "srv-web", "srv-worker"]),
     );
-    expect(test.events).toEqual([]);
+    expect(test.events).toContain("restrict");
+    expect(test.events).not.toContain("migration");
   });
   it.each([
     "scripts/run-historical89-inplace-operation.mjs",
@@ -747,13 +825,14 @@ describe("historical89 callable preparation orchestration", () => {
     await expect(test.run()).rejects.toThrow("finalized mismatch");
     expect(test.events).toContain("rollback");
     expect(test.events).not.toContain("finalize-commit");
-    expect(test.events).not.toContain("restrict");
+    expect(test.events).toContain("restrict");
     expect(test.events).not.toContain("permit");
     const original = test.journal.bytes("finalize.request");
     fixtures.mismatch = "";
     await expect(test.run()).resolves.toMatchObject({
       outcome: "committed-96",
     });
+    expect(test.flags.backupCount).toBe(1);
     expect(test.journal.bytes("finalize.request")).toEqual(original);
   });
   it("rolls back a preparation checkpoint mismatch before provider effects", async () => {
@@ -869,10 +948,76 @@ describe("historical89 callable preparation orchestration", () => {
     const test = setup();
     test.flags.lose = "migration";
     await expect(test.run()).rejects.toThrow("lost reply");
+    expect(test.events.some((event) => event.endsWith("-resume"))).toBe(false);
+    expect(test.suspended).toEqual(
+      new Set(["srv-api", "srv-web", "srv-worker"]),
+    );
+    test.journal.put("srv-api.resume-intent", {
+      operationId: test.journal.get("identity").operationId,
+      serviceId: "srv-api",
+      recoveryIdentitySha256:
+        test.journal.get("binding").recoveryIdentitySha256,
+    });
+    const restoreRequest = {
+      sql: "TEST_ADMISSION_RESTORE",
+      original: test.journal.get("original").connectAcl,
+    };
+    test.journal.put("admission-restore.request", restoreRequest);
+    test.journal.put("admission-restore.attempt-0.start", {
+      backend: {
+        systemIdentifier: "123",
+        databaseOid: "16385",
+        databaseName: "review_router_dimy",
+        pid: 999,
+        backendStart: "backend-999",
+      },
+      requestDigest: digest(restoreRequest),
+    });
+    test.acl.raw = "{=c/reviewrouter}";
+    test.suspended.delete("srv-api");
     await expect(test.run()).resolves.toMatchObject({
       outcome: "committed-96",
     });
     expect(test.events.filter((e) => e === "migration")).toHaveLength(1);
+    expect(
+      test.events.filter((event) => event.endsWith("-resume")),
+    ).toHaveLength(3);
+    expect(test.suspended.size).toBe(0);
+  });
+  it("re-suspends the exact fleet when post-commit resume fails", async () => {
+    const test = setup();
+    test.flags.failResumeId = "srv-web";
+    await expect(test.run()).rejects.toThrow("resume failed");
+    expect(test.events).toContain("migration");
+    expect(test.events).toContain("srv-api-resume");
+    expect(test.events).toContain("srv-web-resume");
+    expect(test.events).not.toContain("srv-worker-resume");
+    expect(test.suspended).toEqual(
+      new Set(["srv-api", "srv-web", "srv-worker"]),
+    );
+    for (const id of ["srv-api", "srv-web", "srv-worker"])
+      expect(
+        test.journal.get(`${id}.resume-compensation-result`),
+      ).toBeDefined();
+    test.flags.failResumeId = "";
+    await expect(test.run()).resolves.toMatchObject({
+      outcome: "committed-96",
+    });
+    expect(test.suspended.size).toBe(0);
+  });
+  it("re-restricts and converges after admission restore completed before output", async () => {
+    const test = setup();
+    await expect(test.run()).resolves.toMatchObject({
+      outcome: "committed-96",
+    });
+    expect(test.journal.get("admission-restore.complete")).toBeDefined();
+    await expect(test.run()).resolves.toMatchObject({
+      outcome: "committed-96",
+    });
+    expect(test.journal.get("terminal-rerestriction.complete")).toBeDefined();
+    expect(
+      test.journal.get("admission-restore-after-rerestriction.complete"),
+    ).toBeDefined();
   });
   it("keeps a lost POST outcome unknown while accepting actual suspended GET observations", async () => {
     const test = setup();

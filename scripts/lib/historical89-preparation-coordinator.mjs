@@ -8,24 +8,30 @@ import {
 import {
   closeSync,
   constants,
+  fstatSync,
   fsyncSync,
   linkSync,
+  mkdtempSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  statSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createReadStream } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { renderHistorical89PreparationReadSql } from "./render-historical89-preparation-custody.mjs";
 import { RenderApiAdapter } from "../../packages/features/release-rollout/src/adapters/render-api.ts";
 import { renderManagedEvidenceDigest } from "./render-schema-handoff-policy.mjs";
+import { createSecretSafePostgresInvocation } from "./secret-safe-command-boundary.mjs";
 
 const fail = (reason) => {
   throw new Error(`historical89_coordinator:${reason}`);
@@ -136,6 +142,304 @@ export function createHistorical89Journal(directory) {
   });
 }
 
+async function hashRegularFd(fd) {
+  const before = fstatSync(fd);
+  if (!before.isFile() || before.size <= 0) fail("backup_file_invalid");
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(null, {
+    fd,
+    autoClose: false,
+    start: 0,
+  }))
+    hash.update(chunk);
+  const after = fstatSync(fd);
+  if (
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.size !== after.size
+  )
+    fail("backup_file_changed");
+  return {
+    bytes: after.size,
+    sha256: `sha256:${hash.digest("hex")}`,
+    capturedAt: after.mtime.toISOString(),
+  };
+}
+
+export async function captureHistorical89RetainedBackup({
+  databaseUrl,
+  journal,
+  operationId,
+  retentionKey,
+  execute = spawnSync,
+}) {
+  if (!/^[0-9a-f-]{36}$/u.test(operationId)) fail("backup_operation_id");
+  if (!/^[a-fA-F0-9]{64}$/u.test(retentionKey ?? "")) fail("retention_key");
+  const retainedRoot = dirname(journal.root);
+  const path = join(retainedRoot, `historical89-${operationId}.dump.gpg`);
+  const scratch = mkdtempSync(
+    join(process.env.RUNNER_TEMP ?? "/tmp", "rr-h89-backup-"),
+  );
+  const plain = join(scratch, "database.dump");
+  const verified = join(scratch, "verified.dump");
+  const pending = join(
+    retainedRoot,
+    `.pending-historical89-${operationId}-${randomUUID()}.gpg`,
+  );
+  for (const entry of readdirSync(retainedRoot)) {
+    if (!entry.startsWith(`.pending-historical89-${operationId}-`)) continue;
+    const stale = join(retainedRoot, entry);
+    const staleFd = openSync(stale, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      if (!fstatSync(staleFd).isFile()) fail("backup_pending_invalid");
+    } finally {
+      closeSync(staleFd);
+    }
+    unlinkSync(stale);
+  }
+  let descriptor;
+  try {
+    descriptor = openSync(
+      plain,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW,
+      0o600,
+    );
+    const invocation = createSecretSafePostgresInvocation({ databaseUrl });
+    try {
+      const result = execute(
+        "pg_dump",
+        [...invocation.args, "--format=custom", "--no-password"],
+        {
+          env: invocation.environment,
+          stdio: ["ignore", descriptor, "pipe"],
+          timeout: 600_000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
+      if (result?.status !== 0 || result?.error) fail("backup_dump_failed");
+    } finally {
+      invocation.cleanup();
+    }
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    const encrypted = execute(
+      "gpg",
+      [
+        "--batch",
+        "--yes",
+        "--pinentry-mode",
+        "loopback",
+        "--passphrase-fd",
+        "0",
+        "--symmetric",
+        "--cipher-algo",
+        "AES256",
+        "--output",
+        pending,
+        plain,
+      ],
+      { input: retentionKey, timeout: 600_000 },
+    );
+    if (encrypted?.status !== 0 || encrypted?.error)
+      fail("backup_encryption_failed");
+    unlinkSync(plain);
+    const pendingFd = openSync(
+      pending,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    if (!fstatSync(pendingFd).isFile()) fail("backup_ciphertext_invalid");
+    const decrypted = execute(
+      "gpg",
+      [
+        "--batch",
+        "--yes",
+        "--pinentry-mode",
+        "loopback",
+        "--passphrase-fd",
+        "0",
+        "--decrypt",
+        "--output",
+        verified,
+        "/proc/self/fd/3",
+      ],
+      {
+        input: retentionKey,
+        timeout: 600_000,
+        stdio: ["pipe", "pipe", "pipe", pendingFd],
+      },
+    );
+    closeSync(pendingFd);
+    if (decrypted?.status !== 0 || decrypted?.error)
+      fail("backup_decryption_failed");
+    const verifyFd = openSync(
+      verified,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    try {
+      await hashRegularFd(verifyFd);
+      const listed = execute("pg_restore", ["--list"], {
+        encoding: "utf8",
+        stdio: [verifyFd, "pipe", "pipe"],
+        timeout: 120_000,
+        maxBuffer: 16 * 1024 * 1024,
+      });
+      if (
+        listed?.status !== 0 ||
+        listed?.error ||
+        !String(listed.stdout ?? "").trim()
+      )
+        fail("backup_unreadable");
+    } finally {
+      closeSync(verifyFd);
+    }
+    unlinkSync(verified);
+    const prePublishFd = openSync(
+      pending,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    try {
+      if (!fstatSync(prePublishFd).isFile()) fail("backup_pending_invalid");
+      fsyncSync(prePublishFd);
+    } finally {
+      closeSync(prePublishFd);
+    }
+    const prePublishDirectory = openSync(
+      retainedRoot,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      fsyncSync(prePublishDirectory);
+    } finally {
+      closeSync(prePublishDirectory);
+    }
+    let adopted = false;
+    try {
+      linkSync(pending, path);
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      adopted = true;
+    }
+    unlinkSync(pending);
+    if (adopted) {
+      const adoptedCipherFd = openSync(
+        path,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+      if (!fstatSync(adoptedCipherFd).isFile()) fail("backup_adoption_invalid");
+      const adoptedDecrypt = execute(
+        "gpg",
+        [
+          "--batch",
+          "--yes",
+          "--pinentry-mode",
+          "loopback",
+          "--passphrase-fd",
+          "0",
+          "--decrypt",
+          "--output",
+          verified,
+          "/proc/self/fd/3",
+        ],
+        {
+          input: retentionKey,
+          timeout: 600_000,
+          stdio: ["pipe", "pipe", "pipe", adoptedCipherFd],
+        },
+      );
+      closeSync(adoptedCipherFd);
+      if (adoptedDecrypt?.status !== 0 || adoptedDecrypt?.error)
+        fail("backup_adoption_decryption_failed");
+      const adoptedFd = openSync(
+        verified,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+      try {
+        await hashRegularFd(adoptedFd);
+        const adoptedList = execute("pg_restore", ["--list"], {
+          encoding: "utf8",
+          stdio: [adoptedFd, "pipe", "pipe"],
+          timeout: 120_000,
+          maxBuffer: 16 * 1024 * 1024,
+        });
+        if (
+          adoptedList?.status !== 0 ||
+          !String(adoptedList.stdout ?? "").trim()
+        )
+          fail("backup_adoption_unreadable");
+      } finally {
+        closeSync(adoptedFd);
+      }
+      unlinkSync(verified);
+    }
+  } catch (error) {
+    if (descriptor !== undefined) closeSync(descriptor);
+    try {
+      unlinkSync(pending);
+    } catch {}
+    if (/^historical89_coordinator:/u.test(error.message)) throw error;
+    fail("backup_capture_failed");
+  } finally {
+    for (const temporary of [plain, verified])
+      try {
+        unlinkSync(temporary);
+      } catch {}
+    try {
+      rmdirSync(scratch);
+    } catch {}
+  }
+  const ciphertextFd = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  );
+  const measured = await hashRegularFd(ciphertextFd);
+  fsyncSync(ciphertextFd);
+  closeSync(ciphertextFd);
+  const metadata = Object.freeze({
+    format: "postgresql-custom-gpg",
+    ...measured,
+  });
+  if (metadata.bytes <= 0) fail("backup_empty");
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  const rootFd = openSync(
+    retainedRoot,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    fsyncSync(rootFd);
+  } finally {
+    closeSync(rootFd);
+  }
+  journal.put("recovery", metadata);
+  return metadata;
+}
+
+export async function verifyHistorical89RetainedBackup(journal, metadata) {
+  const identity = journal.get("identity");
+  const path = join(
+    dirname(journal.root),
+    `historical89-${identity.operationId}.dump.gpg`,
+  );
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const measured = await hashRegularFd(fd);
+  closeSync(fd);
+  if (
+    metadata?.format !== "postgresql-custom-gpg" ||
+    measured.bytes !== metadata.bytes ||
+    measured.sha256 !== metadata.sha256
+  )
+    fail("backup_integrity");
+  return metadata;
+}
+
 // A complete renderer may return advisory-lock rows and a COMMIT command after
 // its single JSON projection. Do not mistake COMMIT.rows=[] for missing custody.
 export function historical89JsonResult(response) {
@@ -226,7 +530,7 @@ export function createHistorical89Render({
     const url = new URL(input);
     const method = init.method ?? "GET";
     const match = url.pathname.match(
-      /^\/v1\/services\/(srv-[a-z0-9]+)(\/suspend)?$/u,
+      /^\/v1\/services\/(srv-[a-z0-9]+)(\/(?:suspend|resume))?$/u,
     );
     if (
       url.origin !== "https://api.render.com" ||
@@ -235,7 +539,7 @@ export function createHistorical89Render({
       !serviceIds.includes(match[1]) ||
       (init.body !== undefined && init.body !== null) ||
       (method === "POST"
-        ? match[2] !== "/suspend"
+        ? !["/suspend", "/resume"].includes(match[2])
         : method !== "GET" || match[2])
     )
       fail("provider_request_scope");
@@ -453,9 +757,8 @@ function sourceProjection(path, bytes) {
   const value = registry["managed-historical89-in-place/v1"];
   if (
     value !== null &&
-    (Object.keys(value).sort().join() !== "digest,externalRecovery,path" ||
-      !reference({ path: value.path, digest: value.digest }) ||
-      !reference(value.externalRecovery))
+    (Object.keys(value).sort().join() !== "digest,path" ||
+      !reference({ path: value.path, digest: value.digest }))
   )
     fail("executable_registry_shape");
   return source.replace(
