@@ -551,6 +551,7 @@ describe("native runner startup exit contract", () => {
       if (mode === "permit stale") f.state.permit.epoch = "2";
       runtime.clients = [f.client, f.reader];
       const dir = mkdtempSync(join(tmpdir(), "rr-startup96-unit-"));
+      const operationDirectory = join(dir, "retained-operation");
       const path = join(dir, "request.json");
       const bytes = bytesOf();
       writeFileSync(path, bytes);
@@ -569,6 +570,10 @@ describe("native runner startup exit contract", () => {
       vi.stubEnv(
         "REVIEW_ROUTER_HISTORICAL89_OPERATION_ID",
         admission().operationId,
+      );
+      vi.stubEnv(
+        "REVIEW_ROUTER_HISTORICAL89_OPERATION_DIRECTORY",
+        operationDirectory,
       );
       vi.stubEnv(
         "REVIEW_ROUTER_HISTORICAL89_VERIFICATION_SHA256",
@@ -622,6 +627,7 @@ describe("runner executable mutation denial", () => {
       responses[sql] = await f.client.query(sql);
     const dir = mkdtempSync(join(tmpdir(), "rr-runner-denial-"));
     try {
+      const operationDirectory = join(dir, "retained-operation");
       const requestPath = join(dir, "request.json");
       const tracePath = join(dir, "trace.jsonl");
       const adapterPath = join(dir, "pg.mjs");
@@ -683,6 +689,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
             REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH:
               mode === "missing request" ? "" : requestPath,
             REVIEW_ROUTER_HISTORICAL89_OPERATION_ID: admission().operationId,
+            REVIEW_ROUTER_HISTORICAL89_OPERATION_DIRECTORY: operationDirectory,
             REVIEW_ROUTER_HISTORICAL89_VERIFICATION_SHA256:
               mode === "wrong digest" ? digest(9) : hashOf(bytesOf()),
           },
