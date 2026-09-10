@@ -903,6 +903,32 @@ export function historical89StableReviewedCatalog(catalog, admission) {
   return { ...catalog, facts };
 }
 
+// v1 commits to the COMPLETE stable catalog in both domains, not a selection
+// of topology/owner fields. Envelope metadata, ordering, multiplicity, unknown
+// facts, ACLs and nulls all remain evidence. The only representation change is
+// the existing source-proven custody definition binding above. These digests
+// are derivations, never approval; reviewed registry entries remain independent.
+const historical89CatalogPins = (stableCatalog) =>
+  Object.fromEntries(
+    ["topology", "ownership"].map((domain) => [
+      `${domain}Digest`,
+      renderManagedEvidenceDigest({
+        domain: `render-historical89/${domain}/v1`,
+        catalog: stableCatalog,
+      }),
+    ]),
+  );
+
+export function deriveHistorical89CatalogPins(catalog, admission) {
+  assertRenderManagedCatalogMatches(
+    catalog,
+    renderManagedEvidenceDigest(catalog),
+  );
+  return historical89CatalogPins(
+    historical89StableReviewedCatalog(catalog, admission),
+  );
+}
+
 /** Materialize only exact source-bound routine tokens, then prove the inverse. */
 export function materializeHistorical89ReviewedTerminal(contract, binding) {
   assertReviewedHistorical89Contract(contract);
@@ -1195,8 +1221,8 @@ function assertReviewedHistorical89Contract(contract) {
 /** Pure comparison, NOT source qualification or authorization. Synthetic tests
  * may supply a contract here; production uses only readReviewed... above.
  * Catalog comparison covers the complete catalog/authority projection, including
- * topology and ownership facts. The separately supplied identity digests are
- * also pinned, but are not substitutes for the actual catalog observation.
+ * topology and ownership facts. Their domain-separated digests are recomputed
+ * from that same complete stable observation, then compared to reviewed pins.
  */
 export function compareHistorical89ReviewedContract(
   contract,
@@ -1252,10 +1278,18 @@ export function compareHistorical89ReviewedContract(
       fail(`review_observation_${key}`);
   }
   assertRenderManagedCatalogMatches(baselineCatalog, admission.catalogDigest);
+  const stableCatalog = historical89StableReviewedCatalog(
+    baselineCatalog,
+    admission,
+  );
   assertRenderManagedCatalogMatches(
-    historical89StableReviewedCatalog(baselineCatalog, admission),
+    stableCatalog,
     contract.identity.catalogDigest,
   );
+  for (const [key, observed] of Object.entries(
+    historical89CatalogPins(stableCatalog),
+  ))
+    if (observed !== contract.identity[key]) fail(`review_observation_${key}`);
   if (baselineCatalog.database !== admission.databaseName)
     fail("review_baseline_database");
   // A provenance label alone is never terminal evidence. Both bytes (canonical
