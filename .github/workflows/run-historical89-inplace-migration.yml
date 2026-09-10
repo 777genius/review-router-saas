@@ -171,6 +171,50 @@ jobs:
           }
           NODE
 
+      - name: Create the operation reader credential
+        shell: bash
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node --input-type=module <<'NODE'
+          import { randomBytes } from "node:crypto";
+          import {
+            appendFileSync,
+            closeSync,
+            constants,
+            fsyncSync,
+            openSync,
+            writeFileSync,
+          } from "node:fs";
+          const source = process.env.MIGRATION_DATABASE_URL;
+          if (!source) throw new Error("historical89_migration_url_missing");
+          const reader = new URL(source);
+          reader.username = "reviewrouter_operation_custody_reader";
+          const password = randomBytes(32).toString("base64url");
+          reader.password = password;
+          const value = reader.toString();
+          process.stdout.write(`::add-mask::${password}\n::add-mask::${value}\n`);
+          writeFileSync("/retained/reader-url", value, { mode: 0o600, flag: "wx" });
+          for (const path of ["/retained/reader-url", "/retained"]) {
+            const descriptor = openSync(
+              path,
+              constants.O_RDONLY | constants.O_NOFOLLOW,
+            );
+            try {
+              fsyncSync(descriptor);
+            } finally {
+              closeSync(descriptor);
+            }
+          }
+          appendFileSync(
+            process.env.GITHUB_ENV,
+            `REVIEW_ROUTER_RELEASE_MIGRATION_CUSTODY_READER_DATABASE_URL=${value}\n`,
+            { mode: 0o600 },
+          );
+          NODE
+
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - name: Check database host reachability (no credentials printed)
         env:
@@ -194,7 +238,6 @@ jobs:
         shell: bash
         env:
           REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
-          REVIEW_ROUTER_RELEASE_MIGRATION_CUSTODY_READER_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_CUSTODY_READER_DATABASE_URL }}
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
           set -euo pipefail

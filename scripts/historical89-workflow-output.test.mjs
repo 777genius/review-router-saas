@@ -29,6 +29,21 @@ const wrapper = operation
   .join("\n");
 const pin = `sha256:${"a".repeat(64)}`;
 
+test("reader credential is generated inside retained storage", () => {
+  assert.doesNotMatch(
+    workflow,
+    /secrets\.REVIEW_ROUTER_RELEASE_MIGRATION_CUSTODY_READER_DATABASE_URL/,
+  );
+  assert.match(workflow, /randomBytes\(32\)\.toString\("base64url"\)/);
+  assert.match(workflow, /::add-mask::\$\{password\}/);
+  assert.match(workflow, /::add-mask::\$\{value\}/);
+  assert.match(
+    workflow,
+    /writeFileSync\("\/retained\/reader-url", value, \{ mode: 0o600, flag: "wx" \}\)/,
+  );
+  assert.match(workflow, /fsyncSync\(descriptor\)/);
+});
+
 function execute(output, status = 0) {
   const root = mkdtempSync(join(tmpdir(), "rr-workflow-output-"));
   try {
