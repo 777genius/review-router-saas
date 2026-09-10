@@ -3,12 +3,13 @@ import {
   rmSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   writeFileSync,
   copyFileSync,
   symlinkSync,
 } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
@@ -16,6 +17,8 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   provisionHistorical89Reader,
+  captureHistorical89RetainedBackup,
+  verifyHistorical89RetainedBackup,
   createHistorical89Journal,
   createHistorical89Render,
   historical89BackendState,
@@ -190,9 +193,9 @@ describe("historical89 durable preparation boundary", () => {
     const transport = vi.fn(
       async (url: string) =>
         new Response(
-          url.endsWith("/suspend") ? null : JSON.stringify(observed),
+          /\/(?:suspend|resume)$/u.test(url) ? null : JSON.stringify(observed),
           {
-            status: url.endsWith("/suspend") ? 202 : 200,
+            status: /\/(?:suspend|resume)$/u.test(url) ? 202 : 200,
             headers: { "x-request-id": "request-123" },
           },
         ),
@@ -204,6 +207,7 @@ describe("historical89 durable preparation boundary", () => {
       fetchImpl: transport,
     });
     await render.suspend("srv-worker");
+    await render.resume("srv-worker");
     expect((await render.getService("srv-worker")).suspended).toBe(
       "not_suspended",
     );
@@ -216,7 +220,7 @@ describe("historical89 durable preparation boundary", () => {
     expect(JSON.stringify(records)).not.toContain(token);
     expect(JSON.stringify(records)).not.toContain("Authorization");
     await expect(render.suspend("srv-outside")).rejects.toThrow();
-    expect(transport).toHaveBeenCalledTimes(2);
+    expect(transport).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -356,7 +360,6 @@ describe("native executing source closure", () => {
     const registration = {
       path: "review.json",
       digest,
-      externalRecovery: { path: "recovery.json", digest },
     };
     writeFileSync(
       admission,
@@ -389,4 +392,78 @@ describe("native executing source closure", () => {
     );
     expect(run().stderr).toContain("executable_closure_resolution");
   }, 120_000);
+});
+
+describe("retained fast recovery backup", () => {
+  it("encrypts a fresh custom dump, verifies its decrypted listing, and journals only ciphertext identity", async () => {
+    const journal = journalOf();
+    const execute = vi.fn((command: string, _args: string[], options: any) => {
+      if (command === "pg_dump") {
+        writeFileSync(options.stdio[1], "synthetic-custom-dump");
+        return { status: 0 };
+      }
+      if (command === "gpg") {
+        const output = _args[_args.indexOf("--output") + 1];
+        if (_args.at(-1) === "/proc/self/fd/3")
+          writeFileSync(output, readFileSync(options.stdio[3]));
+        else copyFileSync(_args.at(-1)!, output);
+        return { status: 0 };
+      }
+      return { status: 0, stdout: "; Archive created at synthetic time\n" };
+    });
+    const operationId = randomUUID();
+    journal.put("identity", { operationId });
+    const metadata = await captureHistorical89RetainedBackup({
+      databaseUrl:
+        "postgresql://user:secret@localhost:5432/database?sslmode=require",
+      journal,
+      operationId,
+      retentionKey: "a".repeat(64),
+      execute,
+    });
+    expect(metadata.format).toBe("postgresql-custom-gpg");
+    directories.push(
+      join(dirname(journal.root), `historical89-${operationId}.dump.gpg`),
+    );
+    expect(metadata.bytes).toBeGreaterThan(0);
+    expect(metadata.sha256).toMatch(/^sha256:[a-f0-9]{64}$/u);
+    expect(journal.get("recovery")).toEqual(metadata);
+    expect(await verifyHistorical89RetainedBackup(journal, metadata)).toEqual(
+      metadata,
+    );
+    expect(JSON.stringify(execute.mock.calls)).not.toContain("secret");
+    expect(execute.mock.calls.map(([command]) => command)).toEqual([
+      "pg_dump",
+      "gpg",
+      "gpg",
+      "pg_restore",
+    ]);
+  });
+  it("removes plaintext and pending ciphertext when encryption fails", async () => {
+    const journal = journalOf();
+    const operationId = randomUUID();
+    journal.put("identity", { operationId });
+    const execute = vi.fn((command: string, _args: string[], options: any) => {
+      if (command === "pg_dump") {
+        writeFileSync(options.stdio[1], "synthetic-custom-dump");
+        return { status: 0 };
+      }
+      return { status: 1 };
+    });
+    await expect(
+      captureHistorical89RetainedBackup({
+        databaseUrl: "postgresql://user:secret@localhost:5432/database",
+        journal,
+        operationId,
+        retentionKey: "b".repeat(64),
+        execute,
+      }),
+    ).rejects.toThrow("backup_encryption_failed");
+    expect(journal.get("recovery")).toBeUndefined();
+    expect(
+      readdirSync(dirname(journal.root)).filter((entry) =>
+        entry.includes(operationId),
+      ),
+    ).toEqual([]);
+  });
 });

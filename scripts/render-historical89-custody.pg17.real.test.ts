@@ -152,8 +152,9 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
         offlineRecovery: db,
       }),
       artifactDigest: renderManagedEvidenceDigest({ offlineArtifact: db }),
-      qualifiedAt: "2026-09-07T00:00:00.000Z",
-      restoreVerified: true,
+      capturedAt: "2026-09-07T00:00:00.000Z",
+      dumpReadable: true,
+      retained: true,
     },
     admission: {
       status: "closed",

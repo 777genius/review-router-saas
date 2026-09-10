@@ -516,8 +516,9 @@ describe("operation observation bindings", () => {
     recovery: {
       recoveryIdentitySha256: admission().recoveryIdentitySha256,
       artifactDigest: `sha256:${"b".repeat(64)}`,
-      qualifiedAt: "2026-09-07T00:00:00.000Z",
-      restoreVerified: true,
+      capturedAt: "2026-09-07T00:00:00.000Z",
+      dumpReadable: true,
+      retained: true,
     },
     admission: {
       status: "closed",

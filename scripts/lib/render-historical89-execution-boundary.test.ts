@@ -147,8 +147,9 @@ describe("historical89 execution boundary", () => {
       recovery: {
         recoveryIdentitySha256: `sha256:${"a".repeat(64)}`,
         artifactDigest: `sha256:${"b".repeat(64)}`,
-        qualifiedAt: "2026-09-07T00:00:00.000Z",
-        restoreVerified: true,
+        capturedAt: "2026-09-07T00:00:00.000Z",
+        dumpReadable: true,
+        retained: true,
       },
       admission: {
         status: "closed",
@@ -235,7 +236,7 @@ describe("historical89 execution boundary", () => {
     for (const [label, change] of [
       [
         "unverified restore",
-        { recovery: { ...preconditions.recovery, restoreVerified: false } },
+        { recovery: { ...preconditions.recovery, dumpReadable: false } },
       ],
       [
         "open admission",
