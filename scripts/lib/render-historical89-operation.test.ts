@@ -2,7 +2,13 @@ import { createHash } from "node:crypto";
 import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
 import { renderManagedEvidenceDigest } from "./render-schema-handoff-policy.mjs";
 import { assertHistorical89InPlaceAclDelta } from "./render-historical89-inplace-transaction.mjs";
-import { renderHistorical89PendingDigest } from "./render-historical89-admission.mjs";
+import {
+  compareHistorical89ReviewedContract,
+  historical89StableReviewedCatalog,
+  qualifyHistorical89Admission,
+  renderHistorical89PendingDigest,
+} from "./render-historical89-admission.mjs";
+import { renderManagedOperationCustodyFinalObjectsSql } from "./render-managed-operation-custody.mjs";
 import { describe, expect, it } from "vitest";
 import {
   authorizeHistorical89InPlaceOperation,
@@ -80,7 +86,7 @@ describe("historical89 in-place operation", () => {
     expect(full.startsWith(rehearsal)).toBe(true);
   });
 
-  it("never authorizes production mutation and names every blocker", () => {
+  it("denies invalid qualification and names every blocker", () => {
     const authorization = authorizeHistorical89InPlaceOperation({
       admission: {},
       defaultAcl: {},
@@ -88,9 +94,7 @@ describe("historical89 in-place operation", () => {
       terminalCatalogProvenance: "reviewed-registry",
     } as never);
     expect(authorization.authorizesProductionMutation).toBe(false);
-    expect(authorization.blockedBy).toContain(
-      "operation_custody:owner_bootstrapped_not_independent",
-    );
+
     expect(
       authorization.blockedBy.some((reason) =>
         reason.startsWith("admission_qualification:"),
@@ -543,6 +547,428 @@ describe("operation observation bindings", () => {
     reviewedTerminalCatalog: baselineCatalog,
     reviewedTerminalCatalogDigest: renderManagedEvidenceDigest(baselineCatalog),
     terminalCatalogProvenance: "disposable-rehearsal",
+  });
+
+  // Catalog-shaped PG17 function facts, built from installation SQL independently
+  // of the comparator's verification SQL. They include the bound function bodies.
+  const custodyFacts = (identity: ReturnType<typeof admission>) => {
+    const sql = renderManagedOperationCustodyFinalObjectsSql(
+      historical89InPlaceCustodyBinding(identity),
+    );
+    return [
+      ...sql.matchAll(
+        /CREATE FUNCTION (\S+)\(([^\n]*)\) RETURNS jsonb\n {2}LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public\n {2}AS \$(\w+)\$([\s\S]*?)\$\3\$;/gu,
+      ),
+    ].map(([, routine, args, , body]) => ({
+      family: "routine",
+      fact: {
+        identity: `${routine}(${args})`,
+        owner: "reviewrouter_operation_custody_owner",
+        kind: "f",
+        securityDefiner: true,
+        configurationDigest: createHash("sha256")
+          .update('{"search_path=pg_catalog, public"}')
+          .digest("hex"),
+        definitionDigest: createHash("sha256")
+          .update(
+            `CREATE OR REPLACE FUNCTION ${routine}(${args})\n RETURNS jsonb\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog', 'public'\nAS $function$${body}$function$\n`,
+          )
+          .digest("hex"),
+      },
+    }));
+  };
+  const bindComparisonCatalogs = (supplied: ReturnType<typeof planInput>) => {
+    const catalog = {
+      ...baselineCatalog,
+      facts: [...baselineCatalog.facts, ...custodyFacts(supplied.admission)],
+    };
+    supplied.baselineCatalog = catalog as typeof baselineCatalog;
+    supplied.admission.catalogDigest = renderManagedEvidenceDigest(catalog);
+    supplied.reviewedTerminalCatalog = structuredClone(
+      catalog,
+    ) as typeof baselineCatalog;
+    supplied.reviewedTerminalCatalogDigest =
+      renderManagedEvidenceDigest(catalog);
+    return supplied;
+  };
+  const comparisonInput = () => bindComparisonCatalogs(planInput());
+
+  // Synthetic only: an independent fixture expectation stays fixed while each
+  // observation changes. Nothing registers this contract in production source.
+  const syntheticContract = () => {
+    const stable = { ...admission() } as Record<string, unknown>;
+    for (const key of [
+      "operationId",
+      "providerEffectIds",
+      "qualifiedAt",
+      "recoveryIdentitySha256",
+      "externalFenceSha256",
+      "custodyDigest",
+      "gateStatus",
+    ])
+      delete stable[key];
+    return {
+      kind: phase.kind,
+      version: 2,
+      comparisonPoint: "post-preparation-source-verified/v2",
+      identity: {
+        ...stable,
+        catalogDigest: renderManagedEvidenceDigest(
+          historical89StableReviewedCatalog(
+            comparisonInput().baselineCatalog,
+            admission(),
+          ),
+        ),
+      },
+      creatorEvidence: creatorEvidence(),
+      terminalCatalog: historical89StableReviewedCatalog(
+        comparisonInput().baselineCatalog,
+        admission(),
+      ),
+      terminalCatalogDigest: renderManagedEvidenceDigest(
+        historical89StableReviewedCatalog(
+          comparisonInput().baselineCatalog,
+          admission(),
+        ),
+      ),
+    };
+  };
+
+  it("compares a complete synthetic contract without granting source qualification", () => {
+    expect(
+      compareHistorical89ReviewedContract(
+        syntheticContract(),
+        comparisonInput(),
+      ),
+    ).toBe(true);
+    const supplied = comparisonInput();
+    const {
+      admission,
+      defaultAcl,
+      creatorEvidence,
+      ledger,
+      originalMembership,
+      baselineCatalog,
+      reviewedTerminalCatalog,
+      reviewedTerminalCatalogDigest,
+    } = supplied;
+    const observations = {
+      admission,
+      defaultAcl,
+      creatorEvidence,
+      ledger,
+      originalMembership,
+      baselineCatalog,
+      reviewedTerminalCatalog,
+      reviewedTerminalCatalogDigest,
+    };
+    expect(() => qualifyHistorical89Admission(observations)).toThrow(
+      "independent_review_missing",
+    );
+    expect(() =>
+      qualifyHistorical89Admission({
+        ...observations,
+        reviewedExpectations: syntheticContract(),
+      }),
+    ).toThrow("caller_supplied_expectations");
+    expect(
+      authorizeHistorical89InPlaceOperation({
+        ...observations,
+        terminalCatalogProvenance: "reviewed-registry",
+      }),
+    ).toMatchObject({
+      authorizesProductionMutation: false,
+      blockedBy: ["admission_qualification:independent_review_missing"],
+    });
+  });
+
+  it.each(Object.keys(syntheticContract().identity))(
+    "rejects mismatched stable %s",
+    (key) => {
+      const supplied = comparisonInput();
+      const identity = supplied.admission as Record<string, unknown>;
+      identity[key] = String(identity[key]).startsWith("sha256:")
+        ? digest(99)
+        : key === "sourceTree"
+          ? "c".repeat(40)
+          : String(identity[key]) + "0";
+      expect(() =>
+        compareHistorical89ReviewedContract(syntheticContract(), supplied),
+      ).toThrow();
+    },
+  );
+
+  it.each([
+    "ledger",
+    "originalMembership",
+    "baselineCatalog",
+    "defaultAcl",
+    "creatorEvidence",
+  ])("rejects changed actual %s with unchanged asserted digest", (key) => {
+    const supplied = comparisonInput() as Record<string, any>;
+    supplied[key] = structuredClone(supplied[key]);
+    if (key === "ledger")
+      supplied.ledger[0].id = "00000000-0000-0000-0000-999999999999";
+    else if (key === "creatorEvidence")
+      supplied.creatorEvidence.dynamicDdl = [];
+    else supplied[key].unexpected = true;
+    expect(() =>
+      compareHistorical89ReviewedContract(syntheticContract(), supplied),
+    ).toThrow();
+  });
+
+  it.each([
+    "sessionUser",
+    "currentUser",
+    "creatingRoles",
+    "roleSettings",
+    "securityDefiners",
+    "dynamicDdl",
+    "triggerCreators",
+  ])("compares complete creator %s", (key) => {
+    const supplied = comparisonInput();
+    const evidence = supplied.creatorEvidence as Record<string, unknown>;
+    evidence[key] = key.endsWith("User")
+      ? "other"
+      : key === "creatingRoles"
+        ? ["reviewrouter", "reviewrouter"]
+        : key === "roleSettings"
+          ? [{ role: "other", setting: "search_path", value: "public" }]
+          : [
+              {
+                identity: "different reviewed path",
+                effectiveRole: "reviewrouter",
+                createsObjects: false,
+              },
+            ];
+    expect(() =>
+      compareHistorical89ReviewedContract(syntheticContract(), supplied),
+    ).toThrow();
+  });
+
+  it("rejects a self-consistent unreviewed catalog and terminal", () => {
+    for (const terminal of [false, true]) {
+      const supplied = comparisonInput();
+      const changed = {
+        ...supplied.baselineCatalog,
+        facts: [
+          ...supplied.baselineCatalog.facts,
+          { family: "unreviewed", fact: {} },
+        ],
+      };
+      if (terminal) {
+        supplied.reviewedTerminalCatalog = changed as typeof baselineCatalog;
+        supplied.reviewedTerminalCatalogDigest =
+          renderManagedEvidenceDigest(changed);
+      } else {
+        supplied.baselineCatalog = changed as typeof baselineCatalog;
+        supplied.admission.catalogDigest = renderManagedEvidenceDigest(changed);
+      }
+      expect(() =>
+        compareHistorical89ReviewedContract(syntheticContract(), supplied),
+      ).toThrow();
+    }
+  });
+
+  it.each([undefined, null, {}, { version: 2, facts: [] }])(
+    "rejects missing/malformed terminal %j",
+    (value) => {
+      expect(() =>
+        compareHistorical89ReviewedContract(syntheticContract(), {
+          ...comparisonInput(),
+          reviewedTerminalCatalog: value,
+        }),
+      ).toThrow();
+    },
+  );
+
+  it.each([undefined, "", digest(9)])(
+    "rejects missing/mismatched terminal digest %s",
+    (value) => {
+      expect(() =>
+        compareHistorical89ReviewedContract(syntheticContract(), {
+          ...comparisonInput(),
+          reviewedTerminalCatalogDigest: value,
+        }),
+      ).toThrow();
+    },
+  );
+
+  it.each([
+    "kind",
+    "version",
+    "comparisonPoint",
+    "identity",
+    "creatorEvidence",
+    "terminalCatalog",
+    "terminalCatalogDigest",
+  ])("requires contract %s", (key) => {
+    const contract = syntheticContract() as Record<string, unknown>;
+    delete contract[key];
+    expect(() =>
+      compareHistorical89ReviewedContract(contract, comparisonInput()),
+    ).toThrow();
+  });
+
+  it("does not treat operation-specific coordinates as stable approval", () => {
+    const supplied = comparisonInput();
+    supplied.admission.operationId = "99999999-abcd-abcd-abcd-123456789abc";
+    supplied.admission.providerEffectIds = ["other-effect"];
+    supplied.admission.qualifiedAt = "2026-09-08T00:00:00.000Z";
+    supplied.admission.recoveryIdentitySha256 = digest(88);
+    supplied.admission.externalFenceSha256 = digest(88);
+    supplied.admission.custodyDigest = digest(88);
+    bindComparisonCatalogs(supplied);
+    expect(
+      compareHistorical89ReviewedContract(syntheticContract(), supplied),
+    ).toBe(true);
+    // The planner still rejects these unbound recovery/fence/gate observations.
+    expect(() => planHistorical89InPlaceOperation(supplied)).toThrow();
+  });
+
+  it.each(["operationId", "recoveryIdentitySha256", "externalFenceSha256"])(
+    "accepts newly source-bound %s against one fixed stable contract",
+    (key) => {
+      const contract = syntheticContract();
+      const supplied = comparisonInput();
+      const oldDigest = supplied.admission.catalogDigest;
+      (supplied.admission as Record<string, unknown>)[key] =
+        key === "operationId"
+          ? "99999999-abcd-abcd-abcd-123456789abc"
+          : digest(88);
+      // Old routine hashes are valid source for the WRONG binding.
+      expect(() =>
+        compareHistorical89ReviewedContract(contract, supplied),
+      ).toThrow("review_custody_definition");
+      bindComparisonCatalogs(supplied);
+      expect(supplied.admission.catalogDigest).not.toBe(oldDigest);
+      expect(supplied.reviewedTerminalCatalogDigest).not.toBe(
+        contract.terminalCatalogDigest,
+      );
+      expect(compareHistorical89ReviewedContract(contract, supplied)).toBe(
+        true,
+      );
+    },
+  );
+
+  it.each([0, 1, 2, 3, 4])(
+    "requires exact bound source for custody routine %s",
+    (index) => {
+      const supplied = comparisonInput();
+      const catalog = structuredClone(supplied.baselineCatalog) as Record<
+        string,
+        any
+      >;
+      const routine = catalog.facts.filter(
+        (row: any) => row.family === "routine",
+      )[index];
+      routine.fact.definitionDigest = createHash("sha256")
+        .update(
+          `CREATE OR REPLACE FUNCTION ${routine.fact.identity}\n RETURNS jsonb\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog', 'public'\nAS $function$BEGIN RETURN '{}'::jsonb; END$function$\n`,
+        )
+        .digest("hex");
+      supplied.baselineCatalog = catalog as typeof supplied.baselineCatalog;
+      supplied.admission.catalogDigest = renderManagedEvidenceDigest(catalog);
+      expect(() =>
+        compareHistorical89ReviewedContract(syntheticContract(), supplied),
+      ).toThrow("review_custody_definition");
+    },
+  );
+
+  it.each(["baselineCatalog", "reviewedTerminalCatalog"])(
+    "rejects substituting the stable template for the actual %s",
+    (key) => {
+      const supplied = comparisonInput() as Record<string, any>;
+      supplied[key] = historical89StableReviewedCatalog(
+        supplied[key],
+        supplied.admission,
+      );
+      if (key === "baselineCatalog")
+        supplied.admission.catalogDigest = renderManagedEvidenceDigest(
+          supplied[key],
+        );
+      else
+        supplied.reviewedTerminalCatalogDigest = renderManagedEvidenceDigest(
+          supplied[key],
+        );
+      expect(() =>
+        compareHistorical89ReviewedContract(syntheticContract(), supplied),
+      ).toThrow("review_custody_definition");
+    },
+  );
+
+  it.each(["baselineCatalog", "reviewedTerminalCatalog"])(
+    "retains exact source and authority checks in %s",
+    (key) => {
+      for (const mutation of [
+        "source",
+        "missing",
+        "duplicate",
+        "signature",
+        "owner",
+        "configurationDigest",
+        "securityDefiner",
+        "extraRoutine",
+        "acl",
+      ]) {
+        const supplied = comparisonInput() as Record<string, any>;
+        const catalog = supplied[key];
+        const routine = catalog.facts.find(
+          (row: any) => row.family === "routine",
+        );
+        if (mutation === "source")
+          routine.fact.definitionDigest = "0".repeat(64);
+        else if (mutation === "missing")
+          catalog.facts.splice(catalog.facts.indexOf(routine), 1);
+        else if (mutation === "duplicate")
+          catalog.facts.push(structuredClone(routine));
+        else if (mutation === "signature") routine.fact.identity += "tampered";
+        else if (mutation === "extraRoutine")
+          catalog.facts.push({
+            family: "routine",
+            fact: {
+              ...routine.fact,
+              identity: "release_operation_custody.unreviewed()",
+            },
+          });
+        else if (mutation === "acl")
+          catalog.facts.push({
+            family: "acl",
+            fact: {
+              identity: `routine:${routine.fact.identity}`,
+              entries: [{ grantee: "PUBLIC", privilege: "EXECUTE" }],
+            },
+          });
+        else
+          routine.fact[mutation] =
+            mutation === "securityDefiner" ? false : "tampered";
+        // Re-hashing the altered observation cannot supply independent approval.
+        if (key === "baselineCatalog")
+          supplied.admission.catalogDigest =
+            renderManagedEvidenceDigest(catalog);
+        else
+          supplied.reviewedTerminalCatalogDigest =
+            renderManagedEvidenceDigest(catalog);
+        expect(
+          () =>
+            compareHistorical89ReviewedContract(syntheticContract(), supplied),
+          mutation,
+        ).toThrow();
+      }
+    },
+  );
+
+  it.each([
+    { version: 1 },
+    { comparisonPoint: "pre-preparation/v1" },
+    { unexpected: true },
+  ])("rejects a changed contract schema %j", (change) => {
+    expect(() =>
+      compareHistorical89ReviewedContract(
+        { ...syntheticContract(), ...change },
+        comparisonInput(),
+      ),
+    ).toThrow();
   });
 
   it("binds the complete original CONNECT observation and preserves its grantor", () => {

@@ -109,7 +109,7 @@ export function renderHistorical89InPlacePreflightSql(binding, coordinates) {
  * Decide whether this plan may mutate production, by attempting the real
  * qualification instead of asserting a verdict.
  *
- * Today this always returns false and names why. Bootstrapped custody is a
+ * With the null source registry this returns false. Bootstrapped custody is a
  * boundary, not an approval: `reviewrouter` created it and can still administer
  * it, and owner access has never been independent approval evidence here. The
  * approval root stays the reviewed expectation registry in source, which is
@@ -120,10 +120,16 @@ export function authorizeHistorical89InPlaceOperation({
   defaultAcl,
   creatorEvidence,
   terminalCatalogProvenance,
+  ...observations
 }) {
   const blockedBy = [];
   try {
-    qualifyHistorical89Admission({ admission, defaultAcl, creatorEvidence });
+    qualifyHistorical89Admission({
+      admission,
+      defaultAcl,
+      creatorEvidence,
+      ...observations,
+    });
   } catch (error) {
     const reason = String(error?.message ?? "unknown")
       .split(":")
@@ -134,12 +140,11 @@ export function authorizeHistorical89InPlaceOperation({
     blockedBy.push(
       `terminal_catalog_provenance:${String(terminalCatalogProvenance)}`,
     );
-  // Custody bootstrapped by the database owner binds and fences one operation.
-  // It does not turn owner access into an independent approval.
-  blockedBy.push("operation_custody:owner_bootstrapped_not_independent");
+  // Owner custody alone is insufficient; successful source qualification and
+  // same-contract terminal comparison supply the independent approval root.
   return Object.freeze({
     kind: phase.kind,
-    authorizesProductionMutation: false,
+    authorizesProductionMutation: blockedBy.length === 0,
     blockedBy: Object.freeze([...new Set(blockedBy)].sort()),
   });
 }
@@ -276,6 +281,11 @@ export function planHistorical89InPlaceOperation(input) {
       defaultAcl,
       creatorEvidence,
       terminalCatalogProvenance,
+      ledger,
+      originalMembership,
+      baselineCatalog,
+      reviewedTerminalCatalog,
+      reviewedTerminalCatalogDigest,
     }),
   });
 }

@@ -178,6 +178,58 @@ describe("historical89 execution boundary", () => {
     expect(accepted.externalFenceSha256).toBe(
       preconditions.fence.externalFenceSha256,
     );
+    for (const suspended of ["not_suspended", "suspending", "", "unknown"]) {
+      expect(() =>
+        assertHistorical89ExecutionPreconditions({
+          ...preconditions,
+          automation: {
+            ...preconditions.automation,
+            declaredServices: [
+              { ...preconditions.automation.declaredServices[0], suspended },
+            ],
+          },
+        }),
+      ).toThrow("automation_service");
+    }
+    const otherService = "srv-disposableworker";
+    const fleet = {
+      ...preconditions,
+      automation: {
+        ...preconditions.automation,
+        declaredServices: [
+          ...preconditions.automation.declaredServices,
+          { serviceId: otherService, autoDeploy: "no", suspended: "suspended" },
+        ],
+      },
+    };
+    expect(() =>
+      assertHistorical89ExecutionPreconditions({
+        ...fleet,
+        fence: { ...fleet.fence, scope: [otherService, ...fleet.fence.scope] },
+      }),
+    ).not.toThrow();
+    const sparseScope = [otherService, "removed"];
+    delete sparseScope[1];
+    Object.assign(sparseScope, { unexpected: true });
+    expect(() =>
+      assertHistorical89ExecutionPreconditions({
+        ...fleet,
+        fence: { ...fleet.fence, scope: sparseScope },
+      }),
+    ).toThrow("fence_not_durable");
+    for (const scope of [
+      fleet.fence.scope,
+      [otherService, otherService],
+      [otherService, "srv-undeclared"],
+      [otherService, ...fleet.fence.scope, "srv-undeclared"],
+    ]) {
+      expect(() =>
+        assertHistorical89ExecutionPreconditions({
+          ...fleet,
+          fence: { ...fleet.fence, scope },
+        }),
+      ).toThrow("fence_scope_mismatch");
+    }
     // The one thing a nonsuperuser owner cannot promise is stated, not hidden.
     expect(accepted.privilegedConcurrentMutation).toBe("detected-and-refused");
     for (const [label, change] of [
