@@ -7,6 +7,14 @@ on:
         description: Exact protected main commit to run this against
         required: true
         type: string
+      verification_operation_id:
+        description: Original retained operation ID for already96 verification (blank for a new operation)
+        required: false
+        type: string
+      verification_sha256:
+        description: Independent sha256 digest of exact retained verification request bytes
+        required: false
+        type: string
 
 permissions: {}
 
@@ -101,6 +109,14 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      REVIEW_ROUTER_HISTORICAL89_OPERATION_DIRECTORY: ${{ runner.temp }}/historical89-private/operation
+      REVIEW_ROUTER_HISTORICAL89_SOURCE_COMMIT: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
+      # This is the executable being attested, NOT an output report.
+      REVIEW_ROUTER_HISTORICAL89_ARTIFACT_PATH: ${{ github.workspace }}/scripts/run-historical89-inplace-operation.mjs
+      REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH: ${{ runner.temp }}/historical89-private/verification.request
+      REVIEW_ROUTER_HISTORICAL89_OPERATION_ID: ${{ inputs.verification_operation_id }}
+      REVIEW_ROUTER_HISTORICAL89_VERIFICATION_SHA256: ${{ inputs.verification_sha256 }}
     steps:
       - name: Checkout verified commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -112,6 +128,37 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
+
+      - name: Prepare private evidence and validate retention inputs
+        id: evidence
+        shell: bash
+        env:
+          RETENTION_KEY: ${{ secrets.REVIEW_ROUTER_HISTORICAL89_RETENTION_KEY }}
+          VERIFICATION_JSON: ${{ secrets.REVIEW_ROUTER_HISTORICAL89_VERIFICATION_JSON }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir "$RUNNER_TEMP/historical89-private" "$RUNNER_TEMP/historical89-result"
+          printf '%s\n' '{"outcome":"fenced-unresolved","reason":"operation_not_completed"}' > "$RUNNER_TEMP/historical89-result/result.json"
+          # Optional encrypted diagnostics; never publish unencrypted private evidence.
+          if [[ -n "$RETENTION_KEY" ]]; then
+            [[ "$RETENTION_KEY" =~ ^[a-fA-F0-9]{64}$ ]]
+            printf '%s' probe | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --symmetric --cipher-algo AES256 --output "$RUNNER_TEMP/historical89-private/probe.gpg" 3<<<"$RETENTION_KEY"
+            rm "$RUNNER_TEMP/historical89-private/probe.gpg"
+          fi
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from "node:fs";
+          import { createHash } from "node:crypto";
+          const bytes = process.env.VERIFICATION_JSON;
+          const id = process.env.REVIEW_ROUTER_HISTORICAL89_OPERATION_ID;
+          const pin = process.env.REVIEW_ROUTER_HISTORICAL89_VERIFICATION_SHA256;
+          if (bytes || id || pin) {
+            if (!bytes || !id || !/^sha256:[a-f0-9]{64}$/.test(pin ?? "") ||
+                `sha256:${createHash("sha256").update(bytes).digest("hex")}` !== pin)
+              throw new Error("historical89_retained_verification_inputs_invalid");
+            writeFileSync(process.env.REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH, bytes, { mode: 0o600, flag: "wx" });
+          }
+          NODE
 
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - name: Check database host reachability (no credentials printed)
@@ -133,11 +180,40 @@ jobs:
         run: node scripts/diagnose-migration-role.mjs
 
       - name: Run historical89 in-place operation
+        shell: bash
         env:
           REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
+          REVIEW_ROUTER_RELEASE_MIGRATION_CUSTODY_READER_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_CUSTODY_READER_DATABASE_URL }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
-          set -o pipefail
-          node --import tsx scripts/run-historical89-inplace-operation.mjs | tee historical89-result.json
+          set -euo pipefail
+          umask 077
+          node --input-type=module <<'NODE'
+          import { openSync, closeSync, readFileSync, writeFileSync } from "node:fs";
+          import { spawnSync } from "node:child_process";
+          const root = `${process.env.RUNNER_TEMP}/historical89-private`;
+          const stdout = openSync(`${root}/stdout`, "wx", 0o600);
+          const stderr = openSync(`${root}/stderr`, "wx", 0o600);
+          const child = spawnSync(process.execPath, ["--import", "tsx", "scripts/run-historical89-inplace-operation.mjs"], {
+            stdio: ["ignore", stdout, stderr],
+          });
+          closeSync(stdout);
+          closeSync(stderr);
+          // Public output is an allowlisted projection, never raw logs or journal SQL.
+          let result = { outcome: "fenced-unresolved", reason: "operation_unresolved" };
+          try {
+            const raw = JSON.parse(readFileSync(`${root}/stdout`, "utf8"));
+            if (child.status === 0 && ["committed-96", "already-96"].includes(raw.outcome) &&
+                /^sha256:[a-f0-9]{64}$/.test(raw.receiptDigest ?? ""))
+              result = {
+                outcome: raw.outcome, receiptDigest: raw.receiptDigest,
+                ...(raw.outcome === "already-96" ? { verification: "read-only-snapshot", authorizesProductionMutation: false } : {}),
+              };
+          } catch {}
+          writeFileSync(`${process.env.RUNNER_TEMP}/historical89-result/result.json`, `${JSON.stringify(result)}\n`, { mode: 0o600 });
+          console.log(JSON.stringify(result));
+          process.exitCode = child.status === 0 && result.outcome !== "fenced-unresolved" ? 0 : 1;
+          NODE
 
       - name: Restore original Render DB access list
         if: always()
@@ -147,10 +223,31 @@ jobs:
           RENDER_ALLOWLIST_BACKUP_PATH: /tmp/render-allowlist-backup.json
         run: node scripts/restore-render-db-access.mjs
 
+      # Journal contains exact SQL/transport requests and verification-<epoch>.request
+      # plus its .pin. Retain it encrypted, including partial/failing operations.
+      # Runner loss before upload still requires operator reconciliation; never replay
+      # with a new empty journal as recovery. Download/decrypt before 90-day expiry.
+      - name: Seal private operation evidence
+        if: always() && steps.evidence.outcome == 'success'
+        shell: bash
+        env:
+          RETENTION_KEY: ${{ secrets.REVIEW_ROUTER_HISTORICAL89_RETENTION_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [[ -z "$RETENTION_KEY" ]]; then
+            echo "Encrypted diagnostic archive not configured; private journal is not uploaded."
+            exit 0
+          fi
+          tar -C "$RUNNER_TEMP/historical89-private" -czf - . | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --symmetric --cipher-algo AES256 --output "$RUNNER_TEMP/historical89-evidence.gpg" 3<<<"$RETENTION_KEY"
+          mv "$RUNNER_TEMP/historical89-evidence.gpg" "$RUNNER_TEMP/historical89-result/evidence.tar.gz.gpg"
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: historical89-inplace-result-${{ github.run_id }}
-          path: historical89-result.json
-          if-no-files-found: warn
+          name: historical89-inplace-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/historical89-result/result.json
+            ${{ runner.temp }}/historical89-result/evidence.tar.gz.gpg
+          if-no-files-found: error
           retention-days: 90
