@@ -9,6 +9,7 @@ import {
   compareHistorical89PreparationStage,
   historical89OriginalDatabaseAcl,
   historical89StableReviewedCatalog,
+  deriveHistorical89CatalogPins,
   qualifyHistorical89Admission,
   renderHistorical89PendingDigest,
 } from "./render-historical89-admission.mjs";
@@ -581,6 +582,21 @@ describe("operation observation bindings", () => {
       },
     }));
   };
+  // Independent specification of the two versioned hash preimages. Use the
+  // established binding mechanism, but do not use the derivation under test.
+  const independentPins = (catalog: any, identity: any) => {
+    const stable = historical89StableReviewedCatalog(catalog, identity);
+    return {
+      topologyDigest: renderManagedEvidenceDigest({
+        domain: "render-historical89/topology/v1",
+        catalog: stable,
+      }),
+      ownershipDigest: renderManagedEvidenceDigest({
+        domain: "render-historical89/ownership/v1",
+        catalog: stable,
+      }),
+    };
+  };
   const bindComparisonCatalogs = (supplied: ReturnType<typeof planInput>) => {
     const catalog = {
       ...baselineCatalog,
@@ -588,6 +604,10 @@ describe("operation observation bindings", () => {
     };
     supplied.baselineCatalog = catalog as typeof baselineCatalog;
     supplied.admission.catalogDigest = renderManagedEvidenceDigest(catalog);
+    Object.assign(
+      supplied.admission,
+      independentPins(catalog, supplied.admission),
+    );
     supplied.reviewedTerminalCatalog = structuredClone(
       catalog,
     ) as typeof baselineCatalog;
@@ -617,6 +637,7 @@ describe("operation observation bindings", () => {
       comparisonPoint: "post-preparation-source-verified/v2",
       identity: {
         ...stable,
+        ...independentPins(comparisonInput().baselineCatalog, admission()),
         catalogDigest: renderManagedEvidenceDigest(
           historical89StableReviewedCatalog(
             comparisonInput().baselineCatalog,
@@ -637,6 +658,75 @@ describe("operation observation bindings", () => {
       ),
     };
   };
+
+  it("accepts independently derived baseline pins in distinct versioned domains", () => {
+    const supplied = comparisonInput();
+    const pins = deriveHistorical89CatalogPins(
+      supplied.baselineCatalog,
+      supplied.admission,
+    );
+    expect(pins).toEqual(
+      independentPins(supplied.baselineCatalog, supplied.admission),
+    );
+    expect(pins.topologyDigest).not.toBe(pins.ownershipDigest);
+    expect(
+      compareHistorical89ReviewedContract(syntheticContract(), supplied),
+    ).toBe(true);
+  });
+
+  it.each(["topologyDigest", "ownershipDigest"])(
+    "rejects copied wrong %s even when admission and review agree",
+    (key) => {
+      const supplied = comparisonInput();
+      const contract = syntheticContract();
+      (supplied.admission as any)[key] = digest(99);
+      (contract.identity as any)[key] = digest(99);
+      expect(() =>
+        compareHistorical89ReviewedContract(contract, supplied),
+      ).toThrow(`review_observation_${key}`);
+    },
+  );
+
+  it.each(["extra", "duplicate", "order", "owner", "acl", "null"])(
+    "retains %s drift in both derivations even with matching copied pins",
+    (change) => {
+      const supplied = comparisonInput();
+      const contract = syntheticContract();
+      const catalog: any = structuredClone(supplied.baselineCatalog);
+      if (change === "extra")
+        catalog.facts.push({ family: "future", fact: { extra: true } });
+      if (change === "duplicate")
+        catalog.facts.push(
+          ...[
+            { family: "future", fact: {} },
+            { family: "future", fact: {} },
+          ],
+        );
+      if (change === "order") catalog.facts.reverse();
+      if (change === "owner") catalog.facts.at(-1).fact.owner = "other";
+      if (change === "acl") catalog.facts.at(-1).fact.acl = [];
+      if (change === "null") catalog.additional = null;
+      supplied.baselineCatalog = catalog;
+      supplied.admission.catalogDigest = renderManagedEvidenceDigest(catalog);
+      // Also update the complete catalog pin to isolate the derived-pin check.
+      contract.identity.catalogDigest = renderManagedEvidenceDigest(
+        historical89StableReviewedCatalog(catalog, supplied.admission),
+      );
+      const pins = deriveHistorical89CatalogPins(catalog, supplied.admission);
+      for (const key of ["topologyDigest", "ownershipDigest"] as const) {
+        expect(pins[key]).not.toBe((contract.identity as any)[key]);
+        expect(supplied.admission[key]).toBe((contract.identity as any)[key]);
+      }
+      expect(() =>
+        compareHistorical89ReviewedContract(contract, supplied),
+      ).toThrow("review_observation_topologyDigest");
+      contract.identity.topologyDigest = pins.topologyDigest;
+      supplied.admission.topologyDigest = pins.topologyDigest;
+      expect(() =>
+        compareHistorical89ReviewedContract(contract, supplied),
+      ).toThrow("review_observation_ownershipDigest");
+    },
+  );
 
   it("materializes exact bound terminal definitions and rejects altered stable tokens", () => {
     const contract = syntheticContract();
