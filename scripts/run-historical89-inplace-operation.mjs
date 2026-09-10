@@ -332,8 +332,8 @@ export async function runHistorical89Operation({
       );
     };
     const effectiveDatabaseAcl = (observation) => {
-      const { raw: _raw, ...effective } =
-        historical89OriginalDatabaseAcl(observation);
+      const effective = { ...historical89OriginalDatabaseAcl(observation) };
+      delete effective.raw;
       return effective;
     };
     const restoreFleetAfterCommit = async (result) => {
@@ -407,7 +407,7 @@ export async function runHistorical89Operation({
               if (poll < 5) await delay(250);
             }
             if (observed?.suspended !== "suspended")
-              throw new Error("compensation_unobserved");
+              throw new Error("compensation_unobserved", { cause: error });
             journal.once(
               `${service.serviceId}.resume-compensation-result`,
               () => ({ observed }),

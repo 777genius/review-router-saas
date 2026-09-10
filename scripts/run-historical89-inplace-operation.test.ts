@@ -160,7 +160,6 @@ beforeEach(() => {
   fixtures.sourceChange = "";
 });
 const json = (value: unknown) => ({ rows: [{ value }] });
-const d = `sha256:${"d".repeat(64)}`;
 const gateSql = `SET search_path = pg_catalog, public;\n${renderManagedRuntimeGateSql};`;
 
 function setup() {

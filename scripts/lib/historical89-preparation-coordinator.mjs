@@ -17,7 +17,6 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
-  statSync,
   rmdirSync,
   unlinkSync,
   writeFileSync,
@@ -379,17 +378,23 @@ export async function captureHistorical89RetainedBackup({
     if (descriptor !== undefined) closeSync(descriptor);
     try {
       unlinkSync(pending);
-    } catch {}
+    } catch {
+      // The pending artifact may not exist after a failed creation.
+    }
     if (/^historical89_coordinator:/u.test(error.message)) throw error;
     fail("backup_capture_failed");
   } finally {
     for (const temporary of [plain, verified])
       try {
         unlinkSync(temporary);
-      } catch {}
+      } catch {
+        // Temporary plaintext may already have been removed.
+      }
     try {
       rmdirSync(scratch);
-    } catch {}
+    } catch {
+      // Scratch cleanup is best effort after its contents are removed.
+    }
   }
   const ciphertextFd = openSync(
     path,
