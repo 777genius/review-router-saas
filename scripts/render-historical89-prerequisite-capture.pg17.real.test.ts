@@ -141,6 +141,10 @@ const source = {
       expect(result.ledgerObservation?.count).toBe(89);
       expect(result.observations.catalog.facts.length).toBeGreaterThan(0);
       expect(result.observations.objectAcl.rows.length).toBeGreaterThan(0);
+      expect(result.observations.connectAcl.database).toBe(disposableDB);
+      expect(result.digests.connectAcl).toBe(
+        renderManagedEvidenceDigest(result.observations.connectAcl),
+      );
       expect(result.migrationIdentities).toBeDefined();
       expect(result.rollbackConfirmed).toBe(true);
       expect(result.authorizesProductionMutation).toBe(false);
@@ -241,7 +245,7 @@ const source = {
       expect(result.observations.catalog.facts.length).toBeGreaterThan(0);
       expect(elapsedMs).toBeGreaterThan(4_000);
       expect(elapsedMs).toBeLessThan(15_000);
-      expect(subsequentReads).toBe(3);
+      expect(subsequentReads).toBe(4);
       queries.mockRestore();
       expect((await client.query("SHOW statement_timeout")).rows).toEqual([
         { statement_timeout: "3s" },

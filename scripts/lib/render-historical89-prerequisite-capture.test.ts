@@ -14,6 +14,7 @@ import {
 import { renderManagedCatalogSql } from "./render-managed-catalog.mjs";
 import { renderManagedRuntimeGateSql } from "./render-managed-workflow-cutover.mjs";
 import { projectionOf } from "./render-managed-transaction-bodies.mjs";
+import { renderHistorical89ConnectAclSql } from "./render-historical89-execution-boundary.mjs";
 
 const expected = {
   databaseName: "review_router_test",
@@ -95,6 +96,26 @@ function fixture(count = 89): Record<string, any> {
     ],
     defaultAcl: { version: 1, rows: [] },
     objectAcl: { version: 1, rows: [] },
+    connectAcl: {
+      version: 1,
+      database: expected.databaseName,
+      allowConnections: true,
+      connectionLimit: -1,
+      owner: expected.currentRole,
+      raw: null,
+      entries: [
+        {
+          grantee: "PUBLIC",
+          granteeOid: "0",
+          grantor: expected.currentRole,
+          grantorOid: "10",
+          privilege: "CONNECT",
+          grantable: false,
+        },
+      ],
+      connectCapableRoles: [],
+      backends: [],
+    },
   };
 }
 const projectionSql = [
@@ -105,6 +126,7 @@ const projectionSql = [
     renderManagedMembershipSql,
     renderHistorical89DefaultAclSql,
     renderHistorical89ObjectAclSql,
+    renderHistorical89ConnectAclSql,
   ].map((sql) => projectionOf(sql)),
 ];
 function harness(values = fixture(), failAt?: string, code = "42501") {
@@ -341,6 +363,7 @@ describe("read-only historical89 prerequisite capture", () => {
     "memberships",
     "defaultAcl",
     "objectAcl",
+    "connectAcl",
   ])(
     "stops and sanitizes a permission failure at %s, retaining only earlier facts",
     async (stage) => {
@@ -356,6 +379,17 @@ describe("read-only historical89 prerequisite capture", () => {
       expect(result.collectionComplete).toBe(false);
     },
   );
+
+  it("rejects an invalid CONNECT ACL before recording its observation or digest", async () => {
+    const values = fixture();
+    values.connectAcl.owner = "postgres";
+    const result = await harness(values).run();
+    expect(result.collection.connectAcl).toBe("collection-failed");
+    expect(result.observations.connectAcl).toBeUndefined();
+    expect(result.digests.connectAcl).toBeUndefined();
+    expect(result.collectionComplete).toBe(false);
+    expect(result.authorizesProductionMutation).toBe(false);
+  });
 
   it.each(["57014", "XX000"])(
     "sanitizes timeout/other query error %s",

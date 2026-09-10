@@ -17,6 +17,10 @@ import {
   renderManagedRuntimeGateSql,
 } from "./render-managed-workflow-cutover.mjs";
 import { projectionOf } from "./render-managed-transaction-bodies.mjs";
+import {
+  assertHistorical89OriginalConnectAcl,
+  renderHistorical89ConnectAclSql,
+} from "./render-historical89-execution-boundary.mjs";
 
 const limits = Object.freeze({
   bytes: 2_000_000,
@@ -69,6 +73,7 @@ const projections = {
   memberships: projectionOf(renderManagedMembershipSql),
   defaultAcl: projectionOf(renderHistorical89DefaultAclSql),
   objectAcl: projectionOf(renderHistorical89ObjectAclSql),
+  connectAcl: projectionOf(renderHistorical89ConnectAclSql),
 };
 
 // MATERIALIZED avoids evaluating a projection twice. The server limits response
@@ -98,6 +103,10 @@ function validProjection(name, value) {
     );
   if (name === "defaultAcl" || name === "objectAcl")
     return value?.version === 1 && Array.isArray(value.rows);
+  if (name === "connectAcl") {
+    assertHistorical89OriginalConnectAcl(value);
+    return true;
+  }
   if (name === "gate")
     return ["gateStatus", "authzEpoch", "revision"].every(
       (key) => typeof value?.[key] === "string",
