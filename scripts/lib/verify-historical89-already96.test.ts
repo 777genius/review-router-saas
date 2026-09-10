@@ -721,7 +721,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       if (mode === "baseline89") {
         expect(result.stdout).toBe("");
         expect(result.stderr).toBe(
-          "historical89_inplace_failed:render_historical89_admission_rejected:independent_review_missing\n",
+          "historical89_inplace_failed:historical89_coordinator:missing_env:RENDER_API_KEY\n",
         );
         expect(events).toEqual([
           { event: "connect", id: 0 },

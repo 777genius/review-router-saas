@@ -47,7 +47,7 @@ const backend = {
 };
 
 describe("historical89 durable preparation boundary", () => {
-  it("rejects the null source registry before opening a DB, writing requests, or touching Render", async () => {
+  it("rejects an invalid request before opening a DB, writing requests, or touching Render", async () => {
     const effect = vi.fn(() => {
       throw new Error("unexpected effect");
     });
@@ -59,7 +59,7 @@ describe("historical89 durable preparation boundary", () => {
         journal: { put: effect },
         request: {},
       }),
-    ).rejects.toThrow("independent_review_missing");
+    ).rejects.toThrow("request_shape");
     expect(effect).not.toHaveBeenCalled();
   });
 
@@ -295,6 +295,17 @@ describe("native executing source closure", () => {
       mkdirSync(dirname(join(directory, file)), { recursive: true });
       copyFileSync(join(root, file), join(directory, file));
     }
+    const admissionSource = join(
+      directory,
+      "scripts/lib/render-historical89-admission.mjs",
+    );
+    writeFileSync(
+      admissionSource,
+      readFileSync(admissionSource, "utf8").replace(
+        /"managed-historical89-in-place\/v1": \{[\s\S]*?\n  \},/u,
+        '"managed-historical89-in-place/v1": null,',
+      ),
+    );
     writeFileSync(join(directory, "package.json"), '{"type":"module"}');
     const git = (args: string[]) =>
       execFileSync("git", args, {
@@ -324,15 +335,11 @@ describe("native executing source closure", () => {
     const artifact = join(directory, "reviewed-artifact");
     copyFileSync(join(directory, cli), artifact);
     const digest = `sha256:${createHash("sha256").update(readFileSync(artifact)).digest("hex")}`;
-    const request = { sourceCommit: commit, artifactPath: artifact };
     const identity = {
       sourceTree: tree,
       authorizedBinaryArtifactDigest: digest,
     };
-    const script = `import { assertHistorical89ExecutingSource } from ${JSON.stringify(pathToFileURL(join(directory, helper)).href)};
-      try { console.log(assertHistorical89ExecutingSource(${JSON.stringify(request)},${JSON.stringify(identity)})); }
-      catch(error) { console.error(error.message); process.exitCode=1; }`;
-    const run = () =>
+    const run = (sourceCommit = commit) =>
       spawnSync(
         process.execPath,
         [
@@ -340,7 +347,9 @@ describe("native executing source closure", () => {
           createRequire(import.meta.url).resolve("tsx"),
           "--input-type=module",
           "-e",
-          script,
+          `import { assertHistorical89ExecutingSource } from ${JSON.stringify(pathToFileURL(join(directory, helper)).href)};
+            try { console.log(assertHistorical89ExecutingSource(${JSON.stringify({ sourceCommit, artifactPath: artifact })},${JSON.stringify(identity)})); }
+            catch(error) { console.error(error.message); process.exitCode=1; }`,
         ],
         {
           cwd: root,
@@ -353,14 +362,15 @@ describe("native executing source closure", () => {
     expect(clean.stderr).toBe("");
     expect(clean.status).toBe(0);
     expect(clean.stdout.trim()).toBe(digest);
-    const admission = join(
-      directory,
-      "scripts/lib/render-historical89-admission.mjs",
-    );
+    const admission = admissionSource;
     const registration = {
-      path: "review.json",
-      digest,
+      path: "./render-historical89-reviewed-bundle.json",
+      digest: `sha256:${createHash("sha256").update("reviewed bundle\n").digest("hex")}`,
     };
+    writeFileSync(
+      join(directory, "scripts/lib/render-historical89-reviewed-bundle.json"),
+      "reviewed bundle\n",
+    );
     writeFileSync(
       admission,
       readFileSync(admission, "utf8").replace(
@@ -369,6 +379,59 @@ describe("native executing source closure", () => {
       ),
     );
     expect(run().status).toBe(0);
+    git(["add", "scripts/lib/render-historical89-admission.mjs"]);
+    git(["add", "scripts/lib/render-historical89-reviewed-bundle.json"]);
+    git([
+      "-c",
+      "user.name=Synthetic Test",
+      "-c",
+      "user.email=synthetic@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "Activate reviewed bundle",
+    ]);
+    const activationCommit = git(["rev-parse", "HEAD"]);
+    const activated = run(activationCommit);
+    expect(activated.status, activated.stderr).toBe(0);
+    writeFileSync(
+      admission,
+      `${readFileSync(admission, "utf8")}\n// committed admission tamper\n`,
+    );
+    git(["add", admission]);
+    git([
+      "-c",
+      "user.name=Synthetic Test",
+      "-c",
+      "user.email=synthetic@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "Tamper admission executable",
+    ]);
+    expect(run(git(["rev-parse", "HEAD"])).stderr).toContain(
+      "executable_source",
+    );
+    git(["reset", "--hard", activationCommit]);
+    writeFileSync(
+      join(directory, "scripts/lib/render-historical89-operation.mjs"),
+      `${readFileSync(join(directory, "scripts/lib/render-historical89-operation.mjs"), "utf8")}\n// committed tamper\n`,
+    );
+    git(["add", "scripts/lib/render-historical89-operation.mjs"]);
+    git([
+      "-c",
+      "user.name=Synthetic Test",
+      "-c",
+      "user.email=synthetic@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "Tamper runtime",
+    ]);
+    expect(run(git(["rev-parse", "HEAD"])).stderr).toContain(
+      "executable_source",
+    );
+    git(["reset", "--hard", activationCommit]);
     const renderer = "scripts/lib/render-historical89-preparation-custody.mjs";
     writeFileSync(
       join(directory, renderer),
