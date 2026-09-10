@@ -559,6 +559,10 @@ describe("native runner startup exit contract", () => {
         "postgres://unit@unit.invalid/review_router_dimy",
       );
       vi.stubEnv(
+        "REVIEW_ROUTER_RELEASE_MIGRATION_CUSTODY_READER_DATABASE_URL",
+        "postgres://reviewrouter_operation_custody_reader@unit.invalid/review_router_dimy",
+      );
+      vi.stubEnv(
         "REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH",
         mode === "missing request" ? "" : path,
       );
@@ -577,7 +581,9 @@ describe("native runner startup exit contract", () => {
       const errors = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
         vi.resetModules();
-        await import("../run-historical89-inplace-operation.mjs");
+        const { runHistorical89Cli } =
+          await import("../run-historical89-inplace-operation.mjs");
+        await runHistorical89Cli();
         expect(errors).not.toHaveBeenCalled();
         expect(exit).toHaveBeenCalledWith(mode === "valid" ? 0 : 1);
         expect(JSON.parse(output.mock.calls[0][0])).toMatchObject({
@@ -672,6 +678,8 @@ registerHooks({ resolve(specifier, context, nextResolve) {
           env: {
             REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:
               "postgres://fixture@unit.invalid/review_router_dimy",
+            REVIEW_ROUTER_RELEASE_MIGRATION_CUSTODY_READER_DATABASE_URL:
+              "postgres://reviewrouter_operation_custody_reader@unit.invalid/review_router_dimy",
             REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH:
               mode === "missing request" ? "" : requestPath,
             REVIEW_ROUTER_HISTORICAL89_OPERATION_ID: admission().operationId,
@@ -706,7 +714,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       if (mode === "baseline89") {
         expect(result.stdout).toBe("");
         expect(result.stderr).toBe(
-          "historical89_inplace_failed:production_mutation_not_authorized\n",
+          "historical89_inplace_failed:render_historical89_admission_rejected:independent_review_missing\n",
         );
         expect(events).toEqual([
           { event: "connect", id: 0 },

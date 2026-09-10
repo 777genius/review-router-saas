@@ -306,7 +306,7 @@ const product = (b, sql) =>
 
 /** Creates only the protected staging table and roles. Captures original CONNECT
  * entries directly from pg_database, preserving BOTH grantor name and OID. */
-export function renderHistorical89PreparationPrepare(identity) {
+export function renderHistorical89PreparationPrepareParts(identity) {
   const b = assertHistorical89PreparationIdentity(identity);
   const create = `SET LOCAL createrole_self_grant = 'set, inherit';
 CREATE ROLE ${owner} NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
@@ -329,18 +329,27 @@ INSERT INTO ${table} SELECT ${json(b)},jsonb_build_object('database',d.datname,'
 ${releaseOwner}`;
   // Dynamic DDL only on the absent-schema path. Existing objects MUST pass the
   // source-derived verifier before any role grant or effect occurs.
-  return product(
-    b,
-    `${begin(b)}
-DO $prepare$ BEGIN
+  return Object.freeze({
+    beginSql: begin(b),
+    bodySql: `DO $prepare$ BEGIN
  IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname='${schema}') THEN
    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('${owner}','${reader}')) THEN RAISE EXCEPTION 'preparation_roles_present'; END IF;
    EXECUTE ${q(create)};
  END IF;
  ${preparedGuard(b)}
-END $prepare$;
-${readRow}
-COMMIT;`,
+END $prepare$;`,
+    readSql: readRow,
+    commitSql: "COMMIT;",
+  });
+}
+
+const joinParts = (parts) =>
+  [parts.beginSql, parts.bodySql, parts.readSql, parts.commitSql].join("\n");
+
+export function renderHistorical89PreparationPrepare(identity) {
+  return product(
+    identity,
+    joinParts(renderHistorical89PreparationPrepareParts(identity)),
   );
 }
 
@@ -446,7 +455,7 @@ END $final_identity$;`;
 /** Irreversible once-only installation of the SAME accepted permit/receipt
  * routines. A finalization retry must carry the exact binding and original CAS
  * coordinate. No permit is opened and no independent approval is asserted. */
-export function renderHistorical89PreparationFinalize(
+export function renderHistorical89PreparationFinalizeParts(
   identity,
   binding,
   expectedRevision,
@@ -468,10 +477,9 @@ RESET ROLE;
 GRANT SELECT ON public._prisma_migrations TO ${owner};
 GRANT SELECT ON public."HostedCodexRuntimeGate" TO ${owner};
 REVOKE ${owner} FROM ${coordinator} GRANTED BY ${coordinator} RESTRICT;`;
-  return product(
-    b,
-    `${begin(b)}
-DO $finalize$ BEGIN
+  return Object.freeze({
+    beginSql: begin(b),
+    bodySql: `DO $finalize$ BEGIN
  ${renderHistorical89PreparationCatalogGuard(b)}
  IF (SELECT identity FROM ${table}) IS DISTINCT FROM ${json(b)} THEN RAISE EXCEPTION 'preparation_identity_conflict'; END IF;
  IF (SELECT finalization FROM ${table}) IS NOT NULL THEN
@@ -482,8 +490,25 @@ DO $finalize$ BEGIN
    EXECUTE ${q(install)};
  END IF;
 END $finalize$;
-${verify}
-${readRow}
-COMMIT;`,
+${verify}`,
+    readSql: readRow,
+    commitSql: "COMMIT;",
+  });
+}
+
+export function renderHistorical89PreparationFinalize(
+  identity,
+  binding,
+  expectedRevision,
+) {
+  return product(
+    identity,
+    joinParts(
+      renderHistorical89PreparationFinalizeParts(
+        identity,
+        binding,
+        expectedRevision,
+      ),
+    ),
   );
 }

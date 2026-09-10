@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   assertHistorical89PreparationIdentity,
   renderHistorical89PreparationPrepare,
+  renderHistorical89PreparationPrepareParts,
+  renderHistorical89PreparationFinalizeParts,
   renderHistorical89PreparationReadSql,
   renderHistorical89PreparationService,
   renderHistorical89PreparationObserve,
@@ -35,6 +37,31 @@ const binding = {
 };
 
 describe("historical89 staged preparation renderers", () => {
+  it("exposes transaction checkpoints before commit without changing accepted wrappers", () => {
+    for (const [parts, wrapped] of [
+      [
+        renderHistorical89PreparationPrepareParts(identity),
+        renderHistorical89PreparationPrepare(identity),
+      ],
+      [
+        renderHistorical89PreparationFinalizeParts(identity, binding, 5),
+        renderHistorical89PreparationFinalize(identity, binding, 5),
+      ],
+    ]) {
+      expect(
+        [parts.beginSql, parts.bodySql, parts.readSql, parts.commitSql].join(
+          "\n",
+        ),
+      ).toBe(wrapped.sql);
+      expect(parts.beginSql).toContain("pg_advisory_xact_lock(1783285769,89)");
+      expect(parts.beginSql).toContain("preparation_database_identity");
+      expect(parts.bodySql).toContain("preparation_catalog_attestation");
+      expect(parts.bodySql).not.toContain("COMMIT;");
+      expect(parts.readSql).toContain("original_connect");
+      expect(parts.commitSql).toBe("COMMIT;");
+    }
+  });
+
   it("accepts no future recovery/fence digests or raw environment fields", () => {
     expect(assertHistorical89PreparationIdentity(identity)).toEqual(identity);
     for (const change of [

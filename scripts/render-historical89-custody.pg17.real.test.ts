@@ -1,5 +1,7 @@
 import {
   renderHistorical89PreparationPrepare,
+  renderHistorical89PreparationPrepareParts,
+  renderHistorical89PreparationFinalizeParts,
   renderHistorical89PreparationReadSql,
   renderHistorical89PreparationService,
   renderHistorical89PreparationObserve,
@@ -993,6 +995,73 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
     }),
     serviceIds: ["srv-disposable"],
   });
+  it("rolls back Prepare and Finalize when a precommit checkpoint rejects", () => {
+    const b = stagedIdentity(clone());
+    const prepared = renderHistorical89PreparationPrepareParts(b);
+    const rejectCheckpoint =
+      "DO $checkpoint$ BEGIN RAISE EXCEPTION 'checkpoint_mismatch'; END $checkpoint$;";
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        [
+          prepared.beginSql,
+          prepared.bodySql,
+          prepared.readSql,
+          rejectCheckpoint,
+          prepared.commitSql,
+        ].join("\n"),
+      ),
+    ).toThrow("checkpoint_mismatch");
+    expect(
+      pg.query(
+        b.databaseName,
+        "SELECT count(*) FROM pg_namespace WHERE nspname='release_operation_custody'",
+      ),
+    ).toBe("0");
+    expect(
+      pg.query(
+        b.databaseName,
+        "SELECT count(*) FROM pg_roles WHERE rolname IN ('reviewrouter_operation_custody_owner','reviewrouter_operation_custody_reader')",
+      ),
+    ).toBe("0");
+    expect(ledger(b.databaseName)).toHaveLength(89);
+
+    const observed = observedStaging();
+    const before = read(
+      observed.b.databaseName,
+      renderHistorical89PreparationReadSql(observed.b),
+    );
+    const finalized = renderHistorical89PreparationFinalizeParts(
+      observed.b,
+      observed.binding,
+      5,
+    );
+    expect(() =>
+      pg.query(
+        observed.b.databaseName,
+        [
+          finalized.beginSql,
+          finalized.bodySql,
+          finalized.readSql,
+          rejectCheckpoint,
+          finalized.commitSql,
+        ].join("\n"),
+      ),
+    ).toThrow("checkpoint_mismatch");
+    expect(
+      read(
+        observed.b.databaseName,
+        renderHistorical89PreparationReadSql(observed.b),
+      ),
+    ).toEqual(before);
+    expect(
+      pg.query(
+        observed.b.databaseName,
+        "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='release_operation_custody' AND c.relname='operation_permit'",
+      ),
+    ).toBe("0");
+  });
+
   type StagedIdentity = ReturnType<typeof stagedIdentity>;
   const stageService = (
     b: StagedIdentity,

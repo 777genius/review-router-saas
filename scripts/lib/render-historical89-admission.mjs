@@ -1,3 +1,5 @@
+import { assertHistorical89OriginalConnectAcl } from "./render-historical89-execution-boundary.mjs";
+import { assertRenderManagedClosedGate } from "./render-managed-workflow-cutover.mjs";
 import { readRenderHistorical96CheckoutInventory } from "./render-historical96-checkout.mjs";
 import { assertRenderManagedCatalogMatches } from "./render-managed-catalog.mjs";
 import { renderHistorical89AdmissionPhase } from "./render-historical89-phase.mjs";
@@ -690,16 +692,135 @@ const reviewedHistorical89Contracts = Object.freeze({
   "managed-historical89-in-place/v1": null,
 });
 
-export function readReviewedHistorical89Contract(kind = phase.kind) {
+export function readReviewedHistorical89Bundle(kind = phase.kind) {
   if (!Object.hasOwn(reviewedHistorical89Contracts, kind))
     fail("admission_kind");
   const review = reviewedHistorical89Contracts[kind];
   if (!review) fail("independent_review_missing");
   const bytes = readFileSync(new URL(review.path, import.meta.url));
   if (`sha256:${sha256(bytes)}` !== review.digest) fail("review_bytes");
-  const contract = JSON.parse(bytes.toString("utf8"));
-  assertReviewedHistorical89Contract(contract);
-  return contract;
+  const bundle = JSON.parse(bytes.toString("utf8"));
+  assertReviewedHistorical89Bundle(bundle);
+  return bundle;
+}
+
+export function readReviewedHistorical89BundleDigest(kind = phase.kind) {
+  readReviewedHistorical89Bundle(kind);
+  return reviewedHistorical89Contracts[kind].digest;
+}
+
+export function readReviewedHistorical89Contract(kind = phase.kind) {
+  return readReviewedHistorical89Bundle(kind).migration;
+}
+
+export function readReviewedHistorical89Preparation(kind = phase.kind) {
+  return readReviewedHistorical89Bundle(kind).preparation;
+}
+
+/** A separately reviewed external qualification is a prerequisite, not a
+ * RecoveryArtifact. Its source registration must cover the exact retained
+ * export, approved recovery point, full effective principals, authentication,
+ * same-database restore procedure, and the exclusive maintenance window.
+ * A standalone isolated restore report cannot populate this registry.
+ * Runtime checks pin the independently reviewed proof bytes; they do not turn
+ * operator-provided claims into a qualification. Registration remains absent. */
+export function readReviewedHistorical89ExternalRecovery(kind = phase.kind) {
+  const bundle = readReviewedHistorical89Bundle(kind);
+  const review = reviewedHistorical89Contracts[kind].externalRecovery;
+  if (!review) fail("qualified_external_recovery_missing");
+  const bytes = readFileSync(new URL(review.path, import.meta.url));
+  if (`sha256:${sha256(bytes)}` !== review.digest)
+    fail("recovery_review_bytes");
+  const qualification = JSON.parse(bytes.toString("utf8"));
+  if (
+    keysOf(qualification) !==
+      shapeOf([
+        "source",
+        "originalCatalogDigest",
+        "originalLedgerDigest",
+        "proofs",
+        "maintenance",
+        "capturedAt",
+        "qualifiedAt",
+      ]) ||
+    keysOf(qualification.source) !==
+      shapeOf([
+        "providerDatabaseResourceId",
+        "systemIdentifier",
+        "databaseOid",
+        "databaseName",
+      ]) ||
+    keysOf(qualification.maintenance) !==
+      shapeOf(["holder", "reference", "startsAt", "expiresAt", "serviceIds"])
+  )
+    fail("recovery_qualification_shape");
+  for (const key of [
+    "providerDatabaseResourceId",
+    "systemIdentifier",
+    "databaseOid",
+    "databaseName",
+  ])
+    if (qualification.source?.[key] !== bundle.migration.identity[key])
+      fail("recovery_source");
+  if (
+    qualification.originalCatalogDigest !==
+      bundle.preparation.originalCatalogDigest ||
+    qualification.originalLedgerDigest !==
+      bundle.migration.identity.originalLedgerDigest
+  )
+    fail("recovery_point");
+  // Each required claim has independently reviewed evidence bytes, including
+  // effective LOGIN principals and authentication recovery beyond a schema dump.
+  const proofKinds = [
+    "export",
+    "recoveryPoint",
+    "effectivePrincipals",
+    "restore",
+    "authentication",
+    "sameDatabaseRestore",
+    "administrativeExclusion",
+  ];
+  if (keysOf(qualification.proofs) !== shapeOf(proofKinds))
+    fail("recovery_proof_scope");
+  for (const key of proofKinds) {
+    const proof = qualification.proofs[key];
+    if (
+      keysOf(proof) !== shapeOf(["path", "digest", "bytes"]) ||
+      !digest(proof?.digest) ||
+      !Number.isSafeInteger(proof.bytes) ||
+      proof.bytes <= 0 ||
+      !name(proof.path)
+    )
+      fail("recovery_proof_shape");
+    const observed = readFileSync(
+      new URL(proof.path, new URL(review.path, import.meta.url)),
+    );
+    if (
+      observed.byteLength !== proof.bytes ||
+      `sha256:${sha256(observed)}` !== proof.digest
+    )
+      fail(`recovery_proof_${key}`);
+  }
+  const window = qualification.maintenance;
+  if (
+    !name(window?.holder) ||
+    !name(window.reference) ||
+    !instant(window.startsAt) ||
+    !instant(window.expiresAt) ||
+    Date.now() < Date.parse(window.startsAt) ||
+    Date.now() >= Date.parse(window.expiresAt) ||
+    renderManagedEvidenceDigest([...window.serviceIds].sort()) !==
+      renderManagedEvidenceDigest(
+        bundle.preparation.fleet.map((s) => s.serviceId).sort(),
+      ) ||
+    !instant(qualification.capturedAt) ||
+    !instant(qualification.qualifiedAt) ||
+    Date.parse(qualification.capturedAt) >
+      Date.parse(qualification.qualifiedAt) ||
+    Date.parse(qualification.qualifiedAt) > Date.now()
+  )
+    fail("recovery_window");
+  return { ...qualification, recoveryIdentitySha256: review.digest };
 }
 
 const reviewedCustodySourceDigest = sha256(
@@ -712,7 +833,7 @@ const reviewedCustodySourceDigest = sha256(
 // Derive those exact definitions from the existing custody verifier's source
 // and THIS admission binding. Never trust a supplied source/body digest. The
 // SQL preflight still performs the full custody/ACL/preparation attestation.
-export function historical89StableReviewedCatalog(catalog, admission) {
+function reviewedCustodyDefinitions(admission) {
   const binding = Object.fromEntries(
     [
       "operationId",
@@ -750,6 +871,11 @@ AS $function$${body}$function$
       ),
     });
   }
+  return expected;
+}
+
+export function historical89StableReviewedCatalog(catalog, admission) {
+  const expected = reviewedCustodyDefinitions(admission);
   // Preserve every other fact, including custody ownership, ACL, dependencies,
   // signatures and configuration. Only source-proven bound definition hashes
   // change representation, and every expected routine must occur exactly once.
@@ -775,6 +901,215 @@ AS $function$${body}$function$
   }
   if (seen.size !== expected.size) fail("review_custody_missing");
   return { ...catalog, facts };
+}
+
+/** Materialize only exact source-bound routine tokens, then prove the inverse. */
+export function materializeHistorical89ReviewedTerminal(contract, binding) {
+  assertReviewedHistorical89Contract(contract);
+  const definitions = reviewedCustodyDefinitions(binding);
+  const catalog = {
+    ...contract.terminalCatalog,
+    facts: contract.terminalCatalog.facts.map((row) => {
+      const definition =
+        row.family === "routine" && definitions.get(row.fact?.identity);
+      if (!definition) return row;
+      if (row.fact.definitionDigest !== definition.stable)
+        fail("review_terminal_token");
+      return {
+        ...row,
+        fact: { ...row.fact, definitionDigest: definition.observed },
+      };
+    }),
+  };
+  if (
+    renderManagedEvidenceDigest(
+      historical89StableReviewedCatalog(catalog, binding),
+    ) !== contract.terminalCatalogDigest
+  )
+    fail("review_terminal_roundtrip");
+  return { catalog, digest: renderManagedEvidenceDigest(catalog) };
+}
+
+const originalAclKeys = [
+  "version",
+  "database",
+  "allowConnections",
+  "connectionLimit",
+  "owner",
+  "raw",
+  "entries",
+];
+export function historical89OriginalDatabaseAcl(observation) {
+  assertHistorical89OriginalConnectAcl(observation);
+  return Object.fromEntries(
+    originalAclKeys.map((key) => [key, observation[key]]),
+  );
+}
+
+function assertReviewedHistorical89Bundle(bundle) {
+  if (keysOf(bundle) !== shapeOf(["preparation", "migration"]))
+    fail("review_bundle_shape");
+  assertReviewedHistorical89Contract(bundle.migration);
+  const p = bundle.preparation;
+  if (
+    keysOf(p) !==
+      shapeOf([
+        "version",
+        "comparisonPoint",
+        "originalCatalogDigest",
+        "originalDatabaseAcl",
+        "preparedCatalogDigest",
+        "finalizedCatalogDigest",
+        "fleet",
+      ]) ||
+    p.version !== 1 ||
+    p.comparisonPoint !== "original-before-preparation/v1" ||
+    [
+      p.originalCatalogDigest,
+      p.preparedCatalogDigest,
+      p.finalizedCatalogDigest,
+    ].some((v) => !digest(v)) ||
+    keysOf(p.originalDatabaseAcl) !== shapeOf(originalAclKeys)
+  )
+    fail("review_preparation_shape");
+  assertHistorical89OriginalConnectAcl({
+    ...p.originalDatabaseAcl,
+    backends: [],
+    connectCapableRoles: [],
+  });
+  if (
+    p.originalDatabaseAcl.database !== bundle.migration.identity.databaseName ||
+    !Array.isArray(p.fleet) ||
+    p.fleet.length !== 3 ||
+    new Set(p.fleet.map((s) => s.serviceId)).size !== 3 ||
+    p.fleet
+      .map((s) => s.role)
+      .sort()
+      .join() !== "api,web,worker" ||
+    p.fleet.some(
+      (s) =>
+        keysOf(s) !== shapeOf(["role", "serviceId", "ownerId", "type"]) ||
+        !/^srv-[a-z0-9]{1,64}$/u.test(s.serviceId) ||
+        !name(s.ownerId) ||
+        !name(s.type),
+    )
+  )
+    fail("review_preparation_fleet");
+}
+
+function comparePreparationObservations(bundle, observation) {
+  const { migration } = bundle;
+  const connect = observation.connectAcl;
+  if (
+    !Array.isArray(connect?.backends) ||
+    connect.backends.some(
+      (backend) =>
+        !name(backend.role) ||
+        backend.superuser !== false ||
+        backend.backendType !== "client backend",
+    ) ||
+    !Array.isArray(connect.connectCapableRoles) ||
+    connect.connectCapableRoles.some(
+      (role) =>
+        !name(role.role) ||
+        role.canLogin !== true ||
+        role.superuser !== false ||
+        typeof role.writesMigratedTables !== "boolean",
+    )
+  )
+    fail("review_original_live_admission");
+  const history = inspectRenderManagedLedgerRows(
+    readRenderHistorical96CheckoutInventory(),
+    observation.ledger,
+    phase,
+  );
+  if (
+    history.count !== phase.baselineCount ||
+    history.ledgerDigest !== migration.identity.originalLedgerDigest
+  )
+    fail("review_original_ledger");
+  assertRenderManagedClosedGate(observation.gate);
+  const creators = assertHistorical89Creators(observation.creatorEvidence);
+  assertHistorical89ProviderDefaultAcl(observation.defaultAcl, creators);
+  for (const [value, expected, label] of [
+    [observation.defaultAcl, migration.identity.aclDigest, "acl"],
+    [
+      [observation.originalMembership],
+      migration.identity.membershipDigest,
+      "membership",
+    ],
+    [
+      observation.creatorEvidence,
+      renderManagedEvidenceDigest(migration.creatorEvidence),
+      "creators",
+    ],
+    [
+      historical89OriginalDatabaseAcl(observation.connectAcl),
+      renderManagedEvidenceDigest(bundle.preparation.originalDatabaseAcl),
+      "connect",
+    ],
+  ])
+    if (renderManagedEvidenceDigest(value) !== expected)
+      fail(`review_original_${label}`);
+  if (
+    renderHistorical89PendingDigest(readHistorical89PendingIdentities()) !==
+    migration.identity.pendingEntriesSha256
+  )
+    fail("review_original_pending");
+}
+
+/** Comparators accept synthetic expectations for tests; only the fixed reader authorizes. */
+export function compareHistorical89Original(bundle, observation) {
+  assertReviewedHistorical89Bundle(bundle);
+  comparePreparationObservations(bundle, observation);
+  assertRenderManagedCatalogMatches(
+    observation.catalog,
+    bundle.preparation.originalCatalogDigest,
+  );
+  if (observation.catalog.database !== bundle.migration.identity.databaseName)
+    fail("review_original_database");
+}
+
+export function compareHistorical89PreparationStage(
+  bundle,
+  stage,
+  observation,
+  identity,
+  binding,
+) {
+  assertReviewedHistorical89Bundle(bundle);
+  if (stage !== "prepared" && stage !== "finalized")
+    fail("review_preparation_stage");
+  comparePreparationObservations(bundle, observation);
+  for (const key of ["systemIdentifier", "databaseOid", "databaseName"])
+    if (identity[key] !== bundle.migration.identity[key])
+      fail("review_preparation_identity");
+  if (
+    stage === "finalized" &&
+    ["operationId", "systemIdentifier", "databaseOid", "databaseName"].some(
+      (key) => binding?.[key] !== identity[key],
+    )
+  )
+    fail("review_preparation_binding");
+  assertRenderManagedCatalogMatches(
+    stage === "prepared"
+      ? observation.catalog
+      : historical89StableReviewedCatalog(observation.catalog, binding),
+    bundle.preparation[`${stage}CatalogDigest`],
+  );
+  const stored = observation.preparation;
+  const acl = observation.connectAcl;
+  if (
+    renderManagedEvidenceDigest(stored?.identity) !==
+      renderManagedEvidenceDigest(identity) ||
+    renderManagedEvidenceDigest(stored?.originalConnect) !==
+      renderManagedEvidenceDigest({
+        database: acl.database,
+        raw: acl.raw,
+        entries: acl.entries.filter((e) => e.privilege === "CONNECT"),
+      })
+  )
+    fail("review_preparation_original_connect");
 }
 
 // Only stable approval fields belong here. Recovery, fence, operation IDs,
