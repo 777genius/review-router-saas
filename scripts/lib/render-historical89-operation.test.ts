@@ -4,6 +4,10 @@ import { renderManagedEvidenceDigest } from "./render-schema-handoff-policy.mjs"
 import { assertHistorical89InPlaceAclDelta } from "./render-historical89-inplace-transaction.mjs";
 import {
   compareHistorical89ReviewedContract,
+  materializeHistorical89ReviewedTerminal,
+  compareHistorical89Original,
+  compareHistorical89PreparationStage,
+  historical89OriginalDatabaseAcl,
   historical89StableReviewedCatalog,
   qualifyHistorical89Admission,
   renderHistorical89PendingDigest,
@@ -633,6 +637,146 @@ describe("operation observation bindings", () => {
       ),
     };
   };
+
+  it("materializes exact bound terminal definitions and rejects altered stable tokens", () => {
+    const contract = syntheticContract();
+    const supplied = comparisonInput();
+    const result = materializeHistorical89ReviewedTerminal(
+      contract,
+      supplied.admission,
+    );
+    expect(result.catalog).toEqual(supplied.reviewedTerminalCatalog);
+    expect(result.digest).toBe(supplied.reviewedTerminalCatalogDigest);
+    const altered = structuredClone(contract);
+    const routine = altered.terminalCatalog.facts.find(
+      (r: any) =>
+        r.family === "routine" &&
+        r.fact.identity.startsWith("release_operation_custody.custody_"),
+    )!;
+    routine.fact.definitionDigest = "0".repeat(64);
+    altered.terminalCatalogDigest = renderManagedEvidenceDigest(
+      altered.terminalCatalog,
+    );
+    expect(() =>
+      materializeHistorical89ReviewedTerminal(altered, supplied.admission),
+    ).toThrow("review_terminal_token");
+  });
+
+  it("compares the entire original catalog and ACL against independent fixture expectations", () => {
+    const supplied = comparisonInput();
+    const observation = { ...supplied, catalog: supplied.baselineCatalog };
+    const bundle = {
+      migration: syntheticContract(),
+      preparation: {
+        version: 1,
+        comparisonPoint: "original-before-preparation/v1",
+        originalCatalogDigest: renderManagedEvidenceDigest(observation.catalog),
+        originalDatabaseAcl: historical89OriginalDatabaseAcl(
+          supplied.connectAcl,
+        ),
+        preparedCatalogDigest: renderManagedEvidenceDigest(observation.catalog),
+        finalizedCatalogDigest: renderManagedEvidenceDigest(
+          historical89StableReviewedCatalog(
+            observation.catalog,
+            supplied.admission,
+          ),
+        ),
+        fleet: ["web", "api", "worker"].map((role) => ({
+          role,
+          serviceId: `srv-${role}`,
+          ownerId: "own-disposable",
+          type: role,
+        })),
+      },
+    };
+    expect(() =>
+      compareHistorical89Original(bundle, observation),
+    ).not.toThrow();
+    const identity = {
+      ...Object.fromEntries(
+        ["operationId", "systemIdentifier", "databaseOid", "databaseName"].map(
+          (key) => [key, supplied.admission[key]],
+        ),
+      ),
+      sourceCommit: "e".repeat(40),
+      artifactReference: supplied.admission.authorizedBinaryArtifactDigest,
+      approvalReference: renderManagedEvidenceDigest(bundle),
+      baselineReference: renderManagedEvidenceDigest(observation),
+      fleetReference: renderManagedEvidenceDigest(bundle.preparation.fleet),
+      serviceIds: bundle.preparation.fleet.map((s) => s.serviceId),
+    };
+    const staged = {
+      ...observation,
+      preparation: {
+        identity,
+        originalConnect: {
+          database: observation.connectAcl.database,
+          raw: observation.connectAcl.raw,
+          entries: structuredClone(
+            observation.connectAcl.entries.filter(
+              (e) => e.privilege === "CONNECT",
+            ),
+          ),
+        },
+      },
+    };
+    for (const stage of ["prepared", "finalized"]) {
+      expect(() =>
+        compareHistorical89PreparationStage(
+          bundle,
+          stage,
+          staged,
+          identity,
+          supplied.admission,
+        ),
+      ).not.toThrow();
+      const altered = structuredClone(staged);
+      altered.preparation.originalConnect.entries[0].grantorOid = "999999";
+      expect(() =>
+        compareHistorical89PreparationStage(
+          bundle,
+          stage,
+          altered,
+          identity,
+          supplied.admission,
+        ),
+      ).toThrow("review_preparation_original_connect");
+      const drifted = structuredClone(staged);
+      drifted.catalog.facts.push({
+        family: "authority",
+        fact: { unrelatedGrant: true },
+      } as never);
+      expect(() =>
+        compareHistorical89PreparationStage(
+          bundle,
+          stage,
+          drifted,
+          identity,
+          supplied.admission,
+        ),
+      ).toThrow();
+    }
+    const unsafeBackend = structuredClone(observation);
+    unsafeBackend.connectAcl.backends.push({
+      role: "postgres",
+      superuser: true,
+      backendType: "client backend",
+    } as never);
+    expect(() => compareHistorical89Original(bundle, unsafeBackend)).toThrow(
+      "review_original_live_admission",
+    );
+    const drift = structuredClone(observation);
+    drift.catalog.facts.push({
+      family: "authority",
+      fact: { unrelatedGrant: true },
+    } as never);
+    expect(() => compareHistorical89Original(bundle, drift)).toThrow();
+    const aclDrift = structuredClone(observation);
+    aclDrift.connectAcl.entries[0].grantorOid = "999999";
+    expect(() => compareHistorical89Original(bundle, aclDrift)).toThrow(
+      "review_original_connect",
+    );
+  });
 
   it("compares a complete synthetic contract without granting source qualification", () => {
     expect(

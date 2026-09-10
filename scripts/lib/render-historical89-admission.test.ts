@@ -9,6 +9,9 @@ import {
   qualifyHistorical89Admission,
   readHistorical89PendingIdentities,
   readReviewedHistorical89Contract,
+  readReviewedHistorical89Bundle,
+  readReviewedHistorical89Preparation,
+  readReviewedHistorical89ExternalRecovery,
   renderHistorical89AdmissionPhase as phase,
   renderHistorical89DefaultAclSql,
   renderHistorical89ObjectAclSql,
@@ -1092,9 +1095,13 @@ describe("qualification", () => {
   it("fails closed: no independently qualified registry exists yet", () => {
     // Deliberate. A production-shaped capture has no independent approval in
     // this checkout, so qualification cannot succeed here by construction.
-    expect(() => readReviewedHistorical89Contract()).toThrow(
-      rejected("independent_review_missing"),
-    );
+    for (const read of [
+      readReviewedHistorical89Contract,
+      readReviewedHistorical89Bundle,
+      readReviewedHistorical89Preparation,
+      readReviewedHistorical89ExternalRecovery,
+    ])
+      expect(() => read()).toThrow(rejected("independent_review_missing"));
     expect(() =>
       qualifyHistorical89Admission({
         admission: admission(),

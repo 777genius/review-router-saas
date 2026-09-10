@@ -1,5 +1,13 @@
+import pgDriver from "pg";
+import { spawnSync } from "node:child_process";
+import {
+  connectHistorical89Reader,
+  provisionHistorical89Reader,
+} from "./lib/historical89-preparation-coordinator.mjs";
 import {
   renderHistorical89PreparationPrepare,
+  renderHistorical89PreparationPrepareParts,
+  renderHistorical89PreparationFinalizeParts,
   renderHistorical89PreparationReadSql,
   renderHistorical89PreparationService,
   renderHistorical89PreparationObserve,
@@ -993,6 +1001,317 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
     }),
     serviceIds: ["srv-disposable"],
   });
+  it("provisions the prepared reader through the secret channel and requires fresh SCRAM authentication", async () => {
+    const b = stagedIdentity(clone());
+    const password = "synthetic-reader-secret-only";
+    const config = (user: string, secret?: string) => ({
+      user,
+      password: secret,
+      database: b.databaseName,
+      host: "127.0.0.1",
+      port: 5432,
+      ssl: false,
+      stream: pg.wireStream(),
+      connectionTimeoutMillis: 10_000,
+    });
+    const quote = (value: string) => "'" + value.replaceAll("'", "''") + "'";
+    const hba = pg.query("postgres", "SHOW hba_file", "postgres");
+    const originalHba = pg.query(
+      "postgres",
+      `SELECT pg_read_file(${quote(hba)})`,
+      "postgres",
+    );
+    const writeHba = (value: string) => {
+      pg.query(
+        "postgres",
+        `COPY (SELECT unnest(string_to_array(${quote(value)},chr(10)))) TO ${quote(hba)}; SELECT pg_reload_conf();`,
+        "postgres",
+      );
+    };
+    let coordinator: InstanceType<typeof pgDriver.Client> | undefined;
+    try {
+      read(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+      const before = read(
+        b.databaseName,
+        renderHistorical89PreparationReadSql(b),
+      );
+      const acl = connectAclOf(b.databaseName);
+      await expect(
+        connectHistorical89Reader(
+          config("reviewrouter_operation_custody_reader", password),
+        ),
+      ).rejects.toThrow("reader_password_authentication_failed");
+      writeHba(
+        "host all reviewrouter_operation_custody_reader 127.0.0.1/32 scram-sha-256\n" +
+          originalHba,
+      );
+      pg.query(
+        "postgres",
+        "ALTER SYSTEM SET log_parameter_max_length=0;",
+        "postgres",
+      );
+      pg.query("postgres", "SELECT pg_reload_conf();", "postgres");
+      await waitFor(
+        () =>
+          pg.query("postgres", "SHOW log_parameter_max_length", "postgres") ===
+          "0",
+      );
+      coordinator = new pgDriver.Client(config("reviewrouter"));
+      await coordinator.connect();
+      // No password was present after Prepare, and preexisting-role shortcuts
+      // are not used. Provisioning verifies the original prepared role first.
+      await expect(
+        connectHistorical89Reader(
+          config("reviewrouter_operation_custody_reader", password),
+        ),
+      ).rejects.toThrow("reader_password_authentication_failed");
+      await provisionHistorical89Reader(coordinator, b, undefined, password);
+      await provisionHistorical89Reader(coordinator, b, undefined, password);
+      await expect(
+        connectHistorical89Reader(
+          config(
+            "reviewrouter_operation_custody_reader",
+            "synthetic-wrong-secret",
+          ),
+        ),
+      ).rejects.toThrow("reader_password_authentication_failed");
+      const reader = await connectHistorical89Reader(
+        config("reviewrouter_operation_custody_reader", password),
+      );
+      try {
+        expect(
+          (await reader.query("SELECT session_user AS role")).rows[0].role,
+        ).toBe("reviewrouter_operation_custody_reader");
+        await reader.query(renderHistorical89PreparationReadSql(b));
+        await expect(
+          reader.query("CREATE TABLE public.reader_must_not_write(id integer)"),
+        ).rejects.toThrow();
+      } finally {
+        await reader.end();
+      }
+      expect(
+        read(b.databaseName, renderHistorical89PreparationReadSql(b)),
+      ).toEqual(before);
+      expect(connectAclOf(b.databaseName).entries).toEqual(acl.entries);
+    } finally {
+      await coordinator?.end();
+      writeHba(originalHba);
+      pg.query(
+        "postgres",
+        "ALTER SYSTEM RESET log_parameter_max_length;",
+        "postgres",
+      );
+      pg.query("postgres", "SELECT pg_reload_conf();", "postgres");
+    }
+  }, 120_000);
+  it("redacts client and server diagnostics when the dynamic ALTER ROLE is canceled while blocked", async () => {
+    const b = stagedIdentity(clone());
+    const password = "synthetic-canceled-reader-secret-only";
+    read(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+    const before = read(
+      b.databaseName,
+      renderHistorical89PreparationReadSql(b),
+    );
+    const connect = async (user: string) => {
+      const client = new pgDriver.Client({
+        user,
+        database: b.databaseName,
+        host: "127.0.0.1",
+        port: 5432,
+        ssl: false,
+        stream: pg.wireStream(),
+        connectionTimeoutMillis: 10_000,
+      });
+      await client.connect();
+      return client;
+    };
+    const coordinator = await connect("postgres");
+    const blocker = await connect("postgres");
+    let pending: Promise<unknown> | undefined;
+    let verifier = "";
+    const diagnostics: string[] = [];
+    try {
+      // Establish trusted session logging, then run as the real non-superuser
+      // coordinator identity. Leave cluster policy and role privileges untouched.
+      await coordinator.query(`SET log_parameter_max_length=0;
+        SET log_parameter_max_length_on_error=0;
+        SET log_min_error_statement=error;
+        SET log_error_verbosity=verbose;
+        SET SESSION AUTHORIZATION reviewrouter;`);
+      const pid = (await coordinator.query("SELECT pg_backend_pid() AS pid"))
+        .rows[0].pid;
+      const blockerPid = (await blocker.query("SELECT pg_backend_pid() AS pid"))
+        .rows[0].pid;
+      await blocker.query(`BEGIN;
+        UPDATE pg_authid SET rolpassword=rolpassword
+        WHERE rolname='reviewrouter_operation_custody_reader';`);
+      pending = provisionHistorical89Reader(
+        {
+          query: async (sql: any) => {
+            if (typeof sql !== "string" && sql.text.includes("reader_verifier"))
+              verifier = sql.values[0];
+            try {
+              return await coordinator.query(sql);
+            } catch (error) {
+              // Capture the raw driver diagnostics BEFORE the helper sanitizes them.
+              diagnostics.push(
+                JSON.stringify(error, Object.getOwnPropertyNames(error)),
+              );
+              throw error;
+            }
+          },
+        },
+        b,
+        undefined,
+        password,
+      ).catch((error: unknown) => error);
+      // A pg_authid row update permits the preparation reads, but blocks the
+      // dynamic ALTER ROLE's update. Cancel only after observing that exact wait.
+      await waitFor(
+        () =>
+          pg.query(
+            b.databaseName,
+            `SELECT count(*) FROM pg_stat_activity
+        WHERE pid=${pid} AND wait_event_type='Lock'
+          AND query LIKE 'DO $credential$%'
+          AND ${blockerPid}=ANY(pg_blocking_pids(pid))`,
+            "postgres",
+          ) === "1",
+      );
+      expect(verifier).toMatch(/^SCRAM-SHA-256\$/u);
+      expect(
+        pg.query(
+          b.databaseName,
+          `SELECT pg_cancel_backend(${pid})`,
+          "postgres",
+        ),
+      ).toBe("t");
+      expect(await pending).toMatchObject({
+        message:
+          "historical89_coordinator:reader_credential_provisioning_failed",
+      });
+      expect(diagnostics).toHaveLength(1);
+      expect(JSON.parse(diagnostics[0])).toMatchObject({
+        code: "P0001",
+        message: "reader_credential_failed",
+      });
+
+      // Docker's stderr is the fixture server's log destination. Obtain only
+      // this offline fixture's container ID from its own hostname file.
+      const container = pg.query(
+        b.databaseName,
+        "SELECT trim(pg_read_file('/etc/hostname'))",
+        "postgres",
+      );
+      expect(container).toMatch(/^[a-f0-9]{12,64}$/u);
+      let serverDiagnostics = "";
+      await waitFor(() => {
+        const logs = spawnSync(
+          "docker",
+          ["--host", "unix:///var/run/docker.sock", "logs", container],
+          {
+            env: { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
+            encoding: "utf8",
+            timeout: 10_000,
+            maxBuffer: 16 * 1024 * 1024,
+          },
+        );
+        expect(logs.error).toBeUndefined();
+        expect(logs.status).toBe(0);
+        serverDiagnostics = logs.stdout + logs.stderr;
+        return serverDiagnostics.includes(
+          `[${pid}] ERROR:  P0001: reader_credential_failed`,
+        );
+      });
+      for (const output of [diagnostics.join("\n"), serverDiagnostics]) {
+        expect(output).not.toContain(password);
+        expect(output).not.toContain(verifier);
+        expect(output).not.toContain("SCRAM-SHA-256$");
+      }
+      await blocker.query("ROLLBACK");
+      expect(
+        pg.query(
+          b.databaseName,
+          "SELECT rolpassword IS NULL FROM pg_authid WHERE rolname='reviewrouter_operation_custody_reader'",
+          "postgres",
+        ),
+      ).toBe("t");
+      expect(
+        read(b.databaseName, renderHistorical89PreparationReadSql(b)),
+      ).toEqual(before);
+    } finally {
+      await blocker.query("ROLLBACK");
+      await pending;
+      await Promise.all([coordinator.end(), blocker.end()]);
+    }
+  }, 120_000);
+  it("rolls back Prepare and Finalize when a precommit checkpoint rejects", () => {
+    const b = stagedIdentity(clone());
+    const prepared = renderHistorical89PreparationPrepareParts(b);
+    const rejectCheckpoint =
+      "DO $checkpoint$ BEGIN RAISE EXCEPTION 'checkpoint_mismatch'; END $checkpoint$;";
+    expect(() =>
+      pg.query(
+        b.databaseName,
+        [
+          prepared.beginSql,
+          prepared.bodySql,
+          prepared.readSql,
+          rejectCheckpoint,
+          prepared.commitSql,
+        ].join("\n"),
+      ),
+    ).toThrow("checkpoint_mismatch");
+    expect(
+      pg.query(
+        b.databaseName,
+        "SELECT count(*) FROM pg_namespace WHERE nspname='release_operation_custody'",
+      ),
+    ).toBe("0");
+    expect(
+      pg.query(
+        b.databaseName,
+        "SELECT count(*) FROM pg_roles WHERE rolname IN ('reviewrouter_operation_custody_owner','reviewrouter_operation_custody_reader')",
+      ),
+    ).toBe("0");
+    expect(ledger(b.databaseName)).toHaveLength(89);
+
+    const observed = observedStaging();
+    const before = read(
+      observed.b.databaseName,
+      renderHistorical89PreparationReadSql(observed.b),
+    );
+    const finalized = renderHistorical89PreparationFinalizeParts(
+      observed.b,
+      observed.binding,
+      5,
+    );
+    expect(() =>
+      pg.query(
+        observed.b.databaseName,
+        [
+          finalized.beginSql,
+          finalized.bodySql,
+          finalized.readSql,
+          rejectCheckpoint,
+          finalized.commitSql,
+        ].join("\n"),
+      ),
+    ).toThrow("checkpoint_mismatch");
+    expect(
+      read(
+        observed.b.databaseName,
+        renderHistorical89PreparationReadSql(observed.b),
+      ),
+    ).toEqual(before);
+    expect(
+      pg.query(
+        observed.b.databaseName,
+        "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='release_operation_custody' AND c.relname='operation_permit'",
+      ),
+    ).toBe("0");
+  });
+
   type StagedIdentity = ReturnType<typeof stagedIdentity>;
   const stageService = (
     b: StagedIdentity,
