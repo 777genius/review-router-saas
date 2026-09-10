@@ -1,4 +1,10 @@
-import { createHash, randomUUID } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  pbkdf2Sync,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
 import {
   closeSync,
   constants,
@@ -8,10 +14,16 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import pg from "pg";
+import { renderHistorical89PreparationReadSql } from "./render-historical89-preparation-custody.mjs";
 import { RenderApiAdapter } from "../../packages/features/release-rollout/src/adapters/render-api.ts";
 import { renderManagedEvidenceDigest } from "./render-schema-handoff-policy.mjs";
 
@@ -208,7 +220,7 @@ export function createHistorical89Render({
   token,
   journal,
   serviceIds,
-  fetchImpl = fetch,
+  fetchImpl = globalThis.fetch,
 }) {
   const transport = async (input, init = {}) => {
     const url = new URL(input);
@@ -273,7 +285,7 @@ export function createHistorical89Render({
         body: body.toString("utf8"),
         observedAt: new Date().toISOString(),
       });
-      return new Response(body.length ? body : null, {
+      return new globalThis.Response(body.length ? body : null, {
         status: response.status,
         headers: response.headers,
       });
@@ -283,4 +295,238 @@ export function createHistorical89Render({
     }
   };
   return new RenderApiAdapter(token, transport);
+}
+
+// Only successful protocol-level SCRAM authentication is accepted. A supplied
+// password on a trust connection is not proof that the password works.
+export async function connectHistorical89Reader(configuration) {
+  const client = new pg.Client(configuration);
+  let scram = false;
+  client.connection.on("authenticationSASLFinal", () => {
+    scram = true;
+  });
+  try {
+    await client.connect();
+    if (!scram) fail("reader_password_authentication_required");
+    return client;
+  } catch {
+    await client.end().catch(() => {});
+    fail("reader_password_authentication_failed");
+  }
+}
+
+/** Passwords arrive only through the existing reader connection secret. The
+ * verifier is never part of a rendered/journaled transition. Provisioning is
+ * idempotent and only follows source verification of our own prepared role.
+ * Printable ASCII passwords have identical PostgreSQL/client SASLprep bytes.
+ * Parameter logging must already be disabled by the trusted DB configuration;
+ * this helper does not acquire privileges or change cluster logging policy. */
+export async function provisionHistorical89Reader(
+  client,
+  identity,
+  binding,
+  password,
+) {
+  if (typeof password !== "string" || !/^[\x20-\x7e]{1,1024}$/u.test(password))
+    fail("reader_secret_required");
+  try {
+    await readHistorical89Json(
+      client,
+      renderHistorical89PreparationReadSql(identity, binding).replace(
+        /COMMIT;$/u,
+        "",
+      ),
+    );
+    const logging = await client.query(`SELECT
+      current_setting('log_parameter_max_length') AS parameters,
+      current_setting('log_parameter_max_length_on_error') AS errors`);
+    if (
+      logging.rows.length !== 1 ||
+      logging.rows[0].parameters !== "0" ||
+      logging.rows[0].errors !== "0"
+    )
+      fail("reader_secret_logging");
+    const salt = randomBytes(16);
+    const salted = pbkdf2Sync(password, salt, 4096, 32, "sha256");
+    const clientKey = createHmac("sha256", salted)
+      .update("Client Key")
+      .digest();
+    const stored = createHash("sha256").update(clientKey).digest("base64");
+    const server = createHmac("sha256", salted)
+      .update("Server Key")
+      .digest("base64");
+    const verifier = `SCRAM-SHA-256$4096:${salt.toString("base64")}$${stored}:${server}`;
+    await client.query({
+      text: "SELECT set_config('reviewrouter.reader_verifier',$1,true)",
+      values: [verifier],
+    });
+    await client.query(`DO $credential$ BEGIN
+      EXECUTE format('ALTER ROLE reviewrouter_operation_custody_reader PASSWORD %L',
+        current_setting('reviewrouter.reader_verifier'));
+      PERFORM set_config('reviewrouter.reader_verifier','',true);
+    EXCEPTION WHEN OTHERS THEN RAISE EXCEPTION 'reader_credential_failed';
+    END $credential$;`);
+    await client.query("COMMIT;");
+  } catch {
+    await client.query("ROLLBACK;").catch(() => {});
+    fail("reader_credential_provisioning_failed");
+  }
+}
+
+// Source-owned executable closure, including transitive renderers and their
+// local imports. Capture bytes at module load, never from an operator checkout
+// path. A registry-only registration can live after the reviewed source tree.
+const executableRoot = fileURLToPath(new URL("../../", import.meta.url));
+const executableFiles = Object.freeze([
+  "packages/features/release-rollout/src/adapters/bounded-provider-io.ts",
+  "packages/features/release-rollout/src/adapters/effective-principal-postgres.mjs",
+  "packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs",
+  "packages/features/release-rollout/src/adapters/render-api.ts",
+  "packages/features/release-rollout/src/application/service-transition-ports.ts",
+  "packages/features/release-rollout/src/domain/activation-catalog-policy-artifact.generated.js",
+  "packages/features/release-rollout/src/domain/activation-catalog-policy-contract.ts",
+  "packages/features/release-rollout/src/domain/activation-catalog-policy-normalization.ts",
+  "packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts",
+  "packages/features/release-rollout/src/domain/activation-catalog-policy-raw-promotion-trust-root.json",
+  "packages/features/release-rollout/src/domain/activation-catalog-policy-raw-promotion-trust-root.ts",
+  "packages/features/release-rollout/src/domain/canonical-json.ts",
+  "packages/features/release-rollout/src/domain/effective-principal-inventory.ts",
+  "packages/features/release-rollout/src/domain/release-authority-contract.ts",
+  "packages/features/release-rollout/src/domain/release-image-provenance.ts",
+  "packages/features/release-rollout/src/domain/release-migration-artifact-identity.js",
+  "packages/features/release-rollout/src/domain/release-migration-transition.ts",
+  "packages/features/release-rollout/src/domain/release-rollout.ts",
+  "packages/features/release-rollout/src/domain/sanitized-diagnostic.js",
+  "packages/features/release-rollout/src/domain/service-transition.ts",
+  "packages/features/release-rollout/src/domain/trusted-rollout-evidence.ts",
+  "scripts/lib/historical89-preparation-coordinator.mjs",
+  "scripts/lib/render-historical89-admission.mjs",
+  "scripts/lib/render-historical89-execution-boundary.mjs",
+  "scripts/lib/render-historical89-inplace-transaction.mjs",
+  "scripts/lib/render-historical89-operation.mjs",
+  "scripts/lib/render-historical89-phase.mjs",
+  "scripts/lib/render-historical89-preparation-custody.mjs",
+  "scripts/lib/render-historical89-prerequisite-capture.mjs",
+  "scripts/lib/render-historical96-checkout.mjs",
+  "scripts/lib/render-managed-catalog.mjs",
+  "scripts/lib/render-managed-operation-custody.mjs",
+  "scripts/lib/render-managed-transaction-bodies.mjs",
+  "scripts/lib/render-managed-workflow-cutover.mjs",
+  "scripts/lib/render-retained-exclusion.mjs",
+  "scripts/lib/render-schema-handoff-policy.mjs",
+  "scripts/lib/render-schema-handoff-transaction.mjs",
+  "scripts/lib/secret-safe-command-boundary.mjs",
+  "scripts/lib/verify-historical89-already96.mjs",
+  "scripts/reconcile-codex-rotating-legacy-ambiguity.mjs",
+  "scripts/run-codex-rotating-release-migration.mjs",
+  "scripts/run-historical89-inplace-operation.mjs",
+]);
+const loadedSources = new Map(
+  executableFiles.map((path) => [
+    path,
+    readFileSync(join(executableRoot, path)),
+  ]),
+);
+function sourceProjection(path, bytes) {
+  const source = bytes.toString("utf8");
+  if (path !== "scripts/lib/render-historical89-admission.mjs") return source;
+  const pattern =
+    /const reviewedHistorical89Contracts = Object\.freeze\((\{[\s\S]*?\})\);/u;
+  const match = source.match(pattern);
+  if (!match) fail("executable_registry_shape");
+  // Registration is JSON data only, never an executable override. Only these
+  // source-pinned proof references may differ from the reviewed snapshot.
+  let registry;
+  try {
+    registry = JSON.parse(match[1].replace(/,\s*\}/gu, "}"));
+  } catch {
+    fail("executable_registry_shape");
+  }
+  const reference = (value) =>
+    value &&
+    Object.keys(value).sort().join() === "digest,path" &&
+    typeof value.path === "string" &&
+    /^[a-zA-Z0-9._/-]+$/u.test(value.path) &&
+    /^sha256:[a-f0-9]{64}$/u.test(value.digest);
+  if (Object.keys(registry).join() !== "managed-historical89-in-place/v1")
+    fail("executable_registry_shape");
+  const value = registry["managed-historical89-in-place/v1"];
+  if (
+    value !== null &&
+    (Object.keys(value).sort().join() !== "digest,externalRecovery,path" ||
+      !reference({ path: value.path, digest: value.digest }) ||
+      !reference(value.externalRecovery))
+  )
+    fail("executable_registry_shape");
+  return source.replace(
+    pattern,
+    "const reviewedHistorical89Contracts = Object.freeze({});",
+  );
+}
+export function assertHistorical89ExecutingSource(request, identity) {
+  try {
+    const git = (args) =>
+      execFileSync("git", args, {
+        cwd: executableRoot,
+        maxBuffer: 8 * 1024 * 1024,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    if (
+      git(["rev-parse", `${request.sourceCommit}^{tree}`]).trim() !==
+      identity.sourceTree
+    )
+      fail("executable_source");
+    const artifact = readFileSync(request.artifactPath);
+    if (
+      sha256(artifact) !== identity.authorizedBinaryArtifactDigest ||
+      !artifact.equals(
+        loadedSources.get("scripts/run-historical89-inplace-operation.mjs"),
+      )
+    )
+      fail("executable_artifact");
+    for (const [path, loaded] of loadedSources) {
+      // Reject resolution shadows (for example an untracked .js beside an
+      // extensionless .ts import) as well as modified reviewed source bytes.
+      const requireFromSource = createRequire(join(executableRoot, path));
+      for (const match of loaded
+        .toString("utf8")
+        .matchAll(/(?:\bfrom\s*|\bimport\s*\()(["'])([^"']+)\1/gu)) {
+        if (!match[2].startsWith(".")) continue;
+        let resolved;
+        try {
+          resolved = realpathSync(requireFromSource.resolve(match[2]));
+        } catch (error) {
+          if (error.code !== "MODULE_NOT_FOUND") throw error;
+          resolved = realpathSync(
+            resolve(
+              executableRoot,
+              dirname(path),
+              `${match[2].replace(/\.js$/u, "")}.ts`,
+            ),
+          );
+        }
+        if (
+          !executableFiles.some(
+            (file) => join(executableRoot, file) === resolved,
+          )
+        )
+          fail("executable_closure_resolution");
+      }
+      if (
+        !loaded.equals(readFileSync(join(executableRoot, path))) ||
+        sourceProjection(path, loaded) !==
+          sourceProjection(
+            path,
+            Buffer.from(git(["show", `${request.sourceCommit}:${path}`])),
+          )
+      )
+        fail("executable_closure");
+    }
+    return sha256(artifact);
+  } catch (error) {
+    if (/^historical89_coordinator:executable_[a-z_]+$/u.test(error.message))
+      throw error;
+    fail("executable_closure");
+  }
 }

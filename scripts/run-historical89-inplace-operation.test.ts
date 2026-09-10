@@ -44,11 +44,22 @@ const fixtures = vi.hoisted(() => ({
   checkpoints: [] as string[],
   mismatch: "",
   ledgerCount: 89,
+  sourceChange: "",
 }));
-vi.mock("node:child_process", () => ({
-  execFileSync: (_cmd: string, args: string[]) =>
-    args[0] === "rev-parse" ? "a".repeat(40) : "",
-}));
+vi.mock("node:child_process", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  return {
+    execFileSync: (_cmd: string, args: string[], options: { cwd: string }) => {
+      if (args[0] === "rev-parse") return "a".repeat(40);
+      const path = args[1].split(":")[1];
+      return (
+        readFileSync(join(options.cwd, path), "utf8") +
+        (fixtures.sourceChange === path ? "\n// historical bytes differ" : "")
+      );
+    },
+  };
+});
 vi.mock("./lib/render-historical89-admission.mjs", async (original) => {
   const real = await original<any>();
   return {
@@ -148,6 +159,7 @@ beforeEach(() => {
   fixtures.checkpoints = [];
   fixtures.mismatch = "";
   fixtures.ledgerCount = 89;
+  fixtures.sourceChange = "";
 });
 const json = (value: unknown) => ({ rows: [{ value }] });
 const d = `sha256:${"d".repeat(64)}`;
@@ -159,7 +171,12 @@ function setup() {
   );
   directories.push(directory);
   const artifactPath = join(directory, "artifact");
-  writeFileSync(artifactPath, "synthetic artifact");
+  writeFileSync(
+    artifactPath,
+    readFileSync(
+      new URL("./run-historical89-inplace-operation.mjs", import.meta.url),
+    ),
+  );
   const journal = createHistorical89Journal(join(directory, "journal"));
   const fleet = ["api", "web", "worker"].map((role) => ({
     role,
@@ -205,6 +222,7 @@ function setup() {
     thirdAclState: false,
     lostPost: false,
     wrongOwner: false,
+    configDrift: false,
   };
   let row: any;
   let permit: any = null;
@@ -248,6 +266,17 @@ function setup() {
           alive.delete(pid);
         },
         query: async (sql: any) => {
+          if (sql.text?.includes("set_config('reviewrouter.reader_verifier'")) {
+            events.push("reader-provision");
+            return { rows: [] };
+          }
+          if (
+            sql === "BEGIN;" ||
+            (typeof sql === "string" && sql.startsWith("DO $credential$"))
+          )
+            return { rows: [] };
+          if (typeof sql === "string" && sql.includes("AS parameters"))
+            return { rows: [{ parameters: "0", errors: "0" }] };
           if (typeof sql !== "string")
             return {
               rows: alive.has(sql.values[1])
@@ -522,7 +551,7 @@ function setup() {
         id,
         ownerId: flags.wrongOwner ? "own-wrong" : expected.ownerId,
         type: expected.type,
-        autoDeploy: "no",
+        autoDeploy: flags.configDrift ? "yes" : "no",
         suspended: suspended.has(id) ? "suspended" : "not_suspended",
         serviceDetails: { preDeployCommand: "" },
       };
@@ -539,14 +568,118 @@ function setup() {
     runHistorical89Operation({
       coordinator,
       openReader,
+      readerPassword: "synthetic-reader-secret",
       render,
       journal,
       request: { sourceCommit: "e".repeat(40), artifactPath },
     });
-  return { run, events, flags, journal, artifactPath };
+  return {
+    run,
+    events,
+    flags,
+    journal,
+    artifactPath,
+    suspended,
+    arguments: {
+      coordinator,
+      openReader,
+      readerPassword: "synthetic-reader-secret",
+      render,
+      journal,
+      request: { sourceCommit: "e".repeat(40), artifactPath },
+    },
+  };
 }
 
 describe("historical89 callable preparation orchestration", () => {
+  it("resumes request-only migration with original coordinates after duplicate crashes", async () => {
+    const test = setup();
+    const put = test.journal.put;
+    let crashes = 2;
+    const wrapped = {
+      ...test.journal,
+      put(key: string, value: unknown) {
+        const result = put(key, value);
+        if (key === "migration-1.request" && crashes-- > 0)
+          throw new Error("request-only crash");
+        return result;
+      },
+    };
+    const run = () =>
+      runHistorical89Operation({
+        ...test.arguments,
+        journal: wrapped,
+      });
+    await expect(run()).rejects.toThrow("request-only crash");
+    const request = test.journal.bytes("migration-1.request");
+    await expect(run()).rejects.toThrow("request-only crash");
+    expect(test.journal.get("migration-1.attempt-0.start")).toBeUndefined();
+    expect(test.events).not.toContain("migration");
+    await expect(run()).resolves.toMatchObject({ outcome: "committed-96" });
+    expect(test.journal.bytes("migration-1.request")).toEqual(request);
+    expect(test.events.filter((e) => e === "migration")).toHaveLength(1);
+    expect(test.events).not.toContain("epoch");
+  });
+  it.each([
+    "resumed",
+    "owner",
+    "config",
+    "maintenance",
+    "fence",
+    "attempt",
+    "transport",
+  ])(
+    "rejects persisted binding with changed %s before Finalize replay",
+    async (change) => {
+      const test = setup();
+      test.journal.put("provider-fixture.response", {
+        observed: "synthetic-response",
+      });
+      fixtures.mismatch = "finalized";
+      await expect(test.run()).rejects.toThrow("finalized mismatch");
+      fixtures.mismatch = "";
+      test.events.length = 0;
+      if (change === "resumed") test.suspended.clear();
+      if (change === "owner") test.flags.wrongOwner = true;
+      if (change === "config") test.flags.configDrift = true;
+      if (change === "maintenance")
+        fixtures.recovery.maintenance.holder = "changed";
+      if (change === "fence") {
+        const fence = test.journal.get("fence");
+        fence.establishedAt = "changed";
+        writeFileSync(join(test.journal.root, "fence"), JSON.stringify(fence));
+      }
+      if (change === "attempt" || change === "transport")
+        writeFileSync(
+          join(
+            test.journal.root,
+            change === "attempt"
+              ? "srv-api.suspend-0.response"
+              : "provider-fixture.response",
+          ),
+          JSON.stringify({ changed: true }),
+        );
+      await expect(test.run()).rejects.toThrow(/fleet_observation|retained_/);
+      expect(test.events).not.toContain("finalize-body");
+      expect(test.events).not.toContain("restrict");
+      expect(test.events).not.toContain("migration");
+    },
+  );
+  it.each(["finalize", "migration"])(
+    "rechecks the fleet before replay after a lost %s commit",
+    async (stage) => {
+      const test = setup();
+      test.flags.lose = stage;
+      await expect(test.run()).rejects.toThrow("lost reply");
+      test.suspended.delete("srv-worker");
+      test.events.length = 0;
+      await expect(test.run()).rejects.toThrow("fleet_observation");
+      expect(test.events).not.toContain("finalize-body");
+      expect(test.events).not.toContain("reader-provision");
+      expect(test.events).not.toContain("epoch");
+      expect(test.events).not.toContain("migration");
+    },
+  );
   it("orders the actual preparation renderers, committed intents, provider observations, fresh reader auth and permit", async () => {
     const test = setup();
     await expect(test.run()).resolves.toMatchObject({
@@ -583,6 +716,20 @@ describe("historical89 callable preparation orchestration", () => {
     );
     expect(test.events).toEqual([]);
   });
+  it.each([
+    "scripts/run-historical89-inplace-operation.mjs",
+    "scripts/lib/render-historical89-preparation-custody.mjs",
+    "scripts/lib/historical89-preparation-coordinator.mjs",
+    "scripts/lib/render-historical89-admission.mjs",
+  ])(
+    "rejects executing closure mismatch in %s before effects",
+    async (path) => {
+      const test = setup();
+      fixtures.sourceChange = path;
+      await expect(test.run()).rejects.toThrow("executable_closure");
+      expect(test.events).toEqual([]);
+    },
+  );
   it("rejects changed artifact bytes and changed original observations before preparation", async () => {
     const artifact = setup();
     writeFileSync(artifact.artifactPath, "changed artifact");
@@ -622,6 +769,43 @@ describe("historical89 callable preparation orchestration", () => {
     await expect(test.run()).rejects.toThrow("suspension_unobserved");
     expect(test.events).not.toContain("finalize-body");
     expect(test.events).not.toContain("permit");
+  });
+  it("rehashes partial retained transport before resuming another service", async () => {
+    const test = setup();
+    test.journal.put("provider-fixture.response", {
+      observed: "synthetic-response",
+    });
+    test.flags.lose = "result";
+    await expect(test.run()).rejects.toThrow("lost reply");
+    expect(test.journal.get("binding")).toBeUndefined();
+    writeFileSync(
+      join(test.journal.root, "provider-fixture.response"),
+      JSON.stringify({ changed: true }),
+    );
+    test.events.length = 0;
+    await expect(test.run()).rejects.toThrow("retained_transport");
+    expect(
+      test.events.some(
+        (event) => event.endsWith("-post") || event.endsWith("-get"),
+      ),
+    ).toBe(false);
+  });
+  it("requires the first fresh reader login before any service effects", async () => {
+    const test = setup();
+    test.flags.failReaderAt = 1;
+    await expect(test.run()).rejects.toThrow("reader login failed");
+    expect(test.events).toContain("reader-provision");
+    expect(
+      test.events.some(
+        (event) => event.endsWith("-post") || event.endsWith("-get"),
+      ),
+    ).toBe(false);
+    const retained = test.journal
+      .keys("")
+      .map((key) => test.journal.bytes(key).toString("utf8"))
+      .join("\n");
+    expect(retained).not.toContain("synthetic-reader-secret");
+    expect(retained).not.toContain("SCRAM-SHA-256$");
   });
   it("blocks the permit when the fresh restricted reader cannot authenticate", async () => {
     const test = setup();

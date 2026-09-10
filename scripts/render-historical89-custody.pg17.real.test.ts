@@ -1,3 +1,8 @@
+import pgDriver from "pg";
+import {
+  connectHistorical89Reader,
+  provisionHistorical89Reader,
+} from "./lib/historical89-preparation-coordinator.mjs";
 import {
   renderHistorical89PreparationPrepare,
   renderHistorical89PreparationPrepareParts,
@@ -995,6 +1000,109 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
     }),
     serviceIds: ["srv-disposable"],
   });
+  it("provisions the prepared reader through the secret channel and requires fresh SCRAM authentication", async () => {
+    const b = stagedIdentity(clone());
+    const password = "synthetic-reader-secret-only";
+    const config = (user: string, secret?: string) => ({
+      user,
+      password: secret,
+      database: b.databaseName,
+      host: "127.0.0.1",
+      port: 5432,
+      ssl: false,
+      stream: pg.wireStream(),
+      connectionTimeoutMillis: 10_000,
+    });
+    const quote = (value: string) => "'" + value.replaceAll("'", "''") + "'";
+    const hba = pg.query("postgres", "SHOW hba_file", "postgres");
+    const originalHba = pg.query(
+      "postgres",
+      `SELECT pg_read_file(${quote(hba)})`,
+      "postgres",
+    );
+    const writeHba = (value: string) => {
+      pg.query(
+        "postgres",
+        `COPY (SELECT unnest(string_to_array(${quote(value)},chr(10)))) TO ${quote(hba)}; SELECT pg_reload_conf();`,
+        "postgres",
+      );
+    };
+    let coordinator: InstanceType<typeof pgDriver.Client> | undefined;
+    try {
+      read(b.databaseName, renderHistorical89PreparationPrepare(b).sql);
+      const before = read(
+        b.databaseName,
+        renderHistorical89PreparationReadSql(b),
+      );
+      const acl = connectAclOf(b.databaseName);
+      await expect(
+        connectHistorical89Reader(
+          config("reviewrouter_operation_custody_reader", password),
+        ),
+      ).rejects.toThrow("reader_password_authentication_failed");
+      writeHba(
+        "host all reviewrouter_operation_custody_reader 127.0.0.1/32 scram-sha-256\n" +
+          originalHba,
+      );
+      pg.query(
+        "postgres",
+        "ALTER SYSTEM SET log_parameter_max_length=0;",
+        "postgres",
+      );
+      pg.query("postgres", "SELECT pg_reload_conf();", "postgres");
+      await waitFor(
+        () =>
+          pg.query("postgres", "SHOW log_parameter_max_length", "postgres") ===
+          "0",
+      );
+      coordinator = new pgDriver.Client(config("reviewrouter"));
+      await coordinator.connect();
+      // No password was present after Prepare, and preexisting-role shortcuts
+      // are not used. Provisioning verifies the original prepared role first.
+      await expect(
+        connectHistorical89Reader(
+          config("reviewrouter_operation_custody_reader", password),
+        ),
+      ).rejects.toThrow("reader_password_authentication_failed");
+      await provisionHistorical89Reader(coordinator, b, undefined, password);
+      await provisionHistorical89Reader(coordinator, b, undefined, password);
+      await expect(
+        connectHistorical89Reader(
+          config(
+            "reviewrouter_operation_custody_reader",
+            "synthetic-wrong-secret",
+          ),
+        ),
+      ).rejects.toThrow("reader_password_authentication_failed");
+      const reader = await connectHistorical89Reader(
+        config("reviewrouter_operation_custody_reader", password),
+      );
+      try {
+        expect(
+          (await reader.query("SELECT session_user AS role")).rows[0].role,
+        ).toBe("reviewrouter_operation_custody_reader");
+        await reader.query(renderHistorical89PreparationReadSql(b));
+        await expect(
+          reader.query("CREATE TABLE public.reader_must_not_write(id integer)"),
+        ).rejects.toThrow();
+      } finally {
+        await reader.end();
+      }
+      expect(
+        read(b.databaseName, renderHistorical89PreparationReadSql(b)),
+      ).toEqual(before);
+      expect(connectAclOf(b.databaseName).entries).toEqual(acl.entries);
+    } finally {
+      await coordinator?.end();
+      writeHba(originalHba);
+      pg.query(
+        "postgres",
+        "ALTER SYSTEM RESET log_parameter_max_length;",
+        "postgres",
+      );
+      pg.query("postgres", "SELECT pg_reload_conf();", "postgres");
+    }
+  }, 120_000);
   it("rolls back Prepare and Finalize when a precommit checkpoint rejects", () => {
     const b = stagedIdentity(clone());
     const prepared = renderHistorical89PreparationPrepareParts(b);

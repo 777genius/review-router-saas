@@ -2,9 +2,8 @@
 // Source-qualified preparation and one-operation migration. All external proof
 // roots remain unregistered. A standalone restore report never authorizes effects.
 import pg from "pg";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -61,6 +60,9 @@ import {
 } from "./lib/render-historical89-preparation-custody.mjs";
 import { captureHistorical89Prerequisites } from "./lib/render-historical89-prerequisite-capture.mjs";
 import {
+  assertHistorical89ExecutingSource,
+  connectHistorical89Reader,
+  provisionHistorical89Reader,
   createHistorical89Journal,
   createHistorical89Render,
   readHistorical89Json as readJson,
@@ -174,6 +176,7 @@ function expectedPermit(plan, state = "open") {
 export async function runHistorical89Operation({
   coordinator,
   openReader,
+  readerPassword,
   render,
   journal,
   request,
@@ -186,22 +189,10 @@ export async function runHistorical89Operation({
     !/^[a-f0-9]{40}$/u.test(request.sourceCommit)
   )
     fail("request_shape");
-  const sourceTree = execFileSync(
-    "git",
-    ["rev-parse", `${request.sourceCommit}^{tree}`],
-    { encoding: "utf8" },
-  ).trim();
-  // The source tree and executable artifact are a jointly reviewed pair. The
-  // registry registration is later evidence work and may live in a newer commit
-  // than the artifact's source snapshot; it must not create a self-referential
-  // requirement that the registry commit hash be embedded in its own review.
-  if (sourceTree !== bundle.migration.identity.sourceTree)
-    fail("executable_source");
-  const artifactDigest = `sha256:${createHash("sha256").update(readFileSync(request.artifactPath)).digest("hex")}`;
-  if (
-    artifactDigest !== bundle.migration.identity.authorizedBinaryArtifactDigest
-  )
-    fail("executable_artifact");
+  const artifactDigest = assertHistorical89ExecutingSource(
+    request,
+    bundle.migration.identity,
+  );
   journal.put("invocation", {
     request,
     approvalReference,
@@ -296,6 +287,63 @@ export async function runHistorical89Operation({
       serviceIds: fleet.map((s) => s.serviceId),
     }))
       if (!same(identity[key], value)) fail("durable_identity_conflict");
+    let binding = journal.get("binding");
+    const validateRetainedService = (service) => {
+      const intent = journal.get(`${service.serviceId}.intent`);
+      const result = journal.get(`${service.serviceId}.result`);
+      if (!intent || !result || result.intentDigest !== digest(intent))
+        fail("retained_service");
+      for (const link of [...result.attempts, ...result.transport]) {
+        const retained = journal.get(link.key);
+        if (!retained || digest(retained) !== link.digest)
+          fail("retained_transport");
+      }
+      checkService(service, result.observed, true);
+      return {
+        serviceId: service.serviceId,
+        intent: digest(intent),
+        result: digest(result),
+      };
+    };
+    // Partial preparation can retain service results before binding publication.
+    // Verify their linked bytes before any resumed checkpoint or provider call.
+    for (const service of fleet)
+      if (journal.get(`${service.serviceId}.result`))
+        validateRetainedService(service);
+    const validateRetainedFence = () => {
+      const fence = journal.get("fence");
+      if (
+        !fence ||
+        digest(fence) !== binding.externalFenceSha256 ||
+        fence.operationId !== identity.operationId ||
+        !same(fence.maintenance, recovery.maintenance) ||
+        !same(journal.get("recovery"), recovery) ||
+        binding.recoveryIdentitySha256 !== recovery.recoveryIdentitySha256 ||
+        !same(
+          binding,
+          historical89InPlaceCustodyBinding({
+            ...identity,
+            externalFenceSha256: digest(fence),
+            recoveryIdentitySha256: recovery.recoveryIdentitySha256,
+          }),
+        )
+      )
+        fail("retained_fence");
+      const expectedServices = fleet.map(validateRetainedService);
+      if (
+        !same(fence.services, expectedServices) ||
+        fence.fleet.length !== fleet.length
+      )
+        fail("retained_service");
+      fleet.forEach((service, index) =>
+        checkService(service, fence.fleet[index], true),
+      );
+      assertWindow();
+    };
+    if (binding) {
+      validateRetainedFence();
+      await observeFleet(render, fleet);
+    }
     const checkpoint = async (key, parts, stage, binding) =>
       submit(
         key,
@@ -348,7 +396,6 @@ export async function runHistorical89Operation({
     original = journal.get("original");
     if (!original || digest(original) !== identity.baselineReference)
       fail("original_reference");
-    let binding = journal.get("binding");
     const finalizedHint = await readJson(
       client,
       "SELECT jsonb_build_object('finalized',to_regclass('release_operation_custody.operation_permit') IS NOT NULL)",
@@ -361,6 +408,20 @@ export async function runHistorical89Operation({
         finalizedHint.finalized ? binding : undefined,
       ),
     );
+    const validatePreparationEvidence = () => {
+      for (const key of ["externalFenceSha256", "recoveryIdentitySha256"])
+        if (row.evidence[key] !== binding[key])
+          fail("retained_preparation_evidence");
+      for (const service of fleet)
+        if (
+          row.services[service.serviceId]?.intentSha256 !==
+            digest(journal.get(`${service.serviceId}.intent`)) ||
+          row.services[service.serviceId]?.resultSha256 !==
+            digest(journal.get(`${service.serviceId}.result`))
+        )
+          fail("final_service_evidence");
+    };
+    if (binding) validatePreparationEvidence();
     const transition = async (key, make, field, expected) => {
       const persisted = journal.get(`${key}.request`);
       const input = persisted?.transition ?? make(Number(row.revision));
@@ -387,11 +448,21 @@ export async function runHistorical89Operation({
       )
         fail("transition_observation");
     };
+    await provisionHistorical89Reader(
+      client,
+      identity,
+      finalizedHint.finalized ? binding : undefined,
+      readerPassword,
+    );
+    // A missing original CONNECT capability fails closed; never suspend services
+    // first or widen admission just to make this authentication check pass.
+    await authenticateReader(
+      openReader,
+      client,
+      identity,
+      finalizedHint.finalized ? binding : undefined,
+    );
     if (!binding) {
-      // Test a real fresh login now when original effective CONNECT permits it.
-      const acl = await readJson(client, renderHistorical89ConnectAclSql);
-      if (acl.connectCapableRoles.some((r) => r.role === readerRole))
-        await authenticateReader(openReader, client, identity);
       for (const service of fleet) {
         const key = service.serviceId;
         const observed = checkService(service, await render.getService(key));
@@ -498,6 +569,9 @@ export async function runHistorical89Operation({
       // Binding publication is intent, not proof of a committed Finalize.
       journal.put("binding", binding);
     }
+    validateRetainedFence();
+    validatePreparationEvidence();
+    await observeFleet(render, fleet);
     if (!journal.get("finalize.complete")) {
       const expectedRevision = journal.once("finalize-revision", () =>
         Number(row.revision),
@@ -742,6 +816,7 @@ export async function runHistorical89Operation({
       } finally {
         await reader.end();
       }
+      validateRetainedFence();
       await observeFleet(render, fleet);
       assertWindow();
       const history = inspectHistorical89InPlaceLedger(actual.ledger);
@@ -818,7 +893,10 @@ export async function runHistorical89Operation({
     // transaction is reconciled before any epoch CAS or further migration SQL.
     for (let epoch = 1; epoch <= 8; epoch++) {
       const migrationKey = `migration-${epoch}`;
-      if (journal.get(`${migrationKey}.request`)) {
+      const submittedAttempts = journal
+        .keys(`${migrationKey}.attempt-`)
+        .filter((key) => key.endsWith(".start"));
+      if (submittedAttempts.length > 0) {
         const pendingAdvance = journal.get(`epoch-${epoch}`);
         if (pendingAdvance) {
           const advancedPlan = planHistorical89InPlaceOperation({
@@ -866,6 +944,7 @@ export async function runHistorical89Operation({
         )
       )
         fail("permit_coordinates");
+      validateRetainedFence();
       await authenticateReader(openReader, client, identity, binding);
       await observeFleet(render, fleet);
       await submit(
@@ -941,7 +1020,9 @@ async function run() {
   });
   return runHistorical89Operation({
     coordinator: { open: () => connect(mainUrl) },
-    openReader: () => connect(readerUrl),
+    openReader: () =>
+      connectHistorical89Reader({ connectionString: readerUrl }),
+    readerPassword: decodeURIComponent(new URL(readerUrl).password),
     render,
     journal,
     request: {
