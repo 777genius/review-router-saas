@@ -690,7 +690,11 @@ export function assertHistorical89AdmissionIdentity(admission) {
 // populate this map.
 // prettier-ignore
 const reviewedHistorical89Contracts = Object.freeze({
-  "managed-historical89-in-place/v1": null,
+  "managed-historical89-in-place/v1": {
+    "path": "./render-historical89-reviewed-bundle.json",
+    "digest":
+      "sha256:3cdce1ef1fcd567f9c880d5b79804b7a942cf02200ea7affa5dd36886e92144a",
+  },
 });
 
 export function readReviewedHistorical89Bundle(kind = phase.kind) {
