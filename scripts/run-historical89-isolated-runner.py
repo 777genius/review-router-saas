@@ -13,9 +13,42 @@ import subprocess
 import sys
 
 IMAGE = "ghcr.io/actions/actions-runner@sha256:5036480998280bb21e32ade9fe1b02b493861ac314b62ba1aea320b94f56ec97"
+# Same Ubuntu release as IMAGE, so the extracted pg_dump/pg_restore/libpq.so.5
+# link cleanly against the runner image's own system libraries.
+PGTOOLS_BUILD_IMAGE = "ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254"
 
 def run(args, **kwargs):
     return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
+
+def build_pgtools(home):
+    # The runner image ships neither pg_dump nor pg_restore. Extract PG17
+    # client binaries (matching the production server major version) from a
+    # throwaway, network-attached builder before the isolated runner
+    # container locks its own network down.
+    bin_dir = home / "pgtools" / "bin"
+    lib_dir = home / "pgtools" / "lib"
+    bin_dir.mkdir(parents=True, mode=0o755)
+    lib_dir.mkdir(parents=True, mode=0o755)
+    builder = run(["docker", "run", "-d", PGTOOLS_BUILD_IMAGE, "sleep", "600"]).stdout.strip()
+    try:
+        run(["docker", "exec", builder, "bash", "-c", """
+set -euo pipefail
+apt-get update -qq
+apt-get install -y -qq curl gnupg lsb-release >/dev/null
+curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+apt-get update -qq
+apt-get install -y -qq postgresql-client-17 >/dev/null
+"""])
+        run(["docker", "cp", f"{builder}:/usr/lib/postgresql/17/bin/pg_dump", str(bin_dir / "pg_dump")])
+        run(["docker", "cp", f"{builder}:/usr/lib/postgresql/17/bin/pg_restore", str(bin_dir / "pg_restore")])
+        libpq_target = run(["docker", "exec", builder, "readlink", "-f",
+                             "/lib/x86_64-linux-gnu/libpq.so.5"]).stdout.strip()
+        run(["docker", "cp", f"{builder}:{libpq_target}", str(lib_dir / "libpq.so.5")])
+    finally:
+        run(["docker", "rm", "-f", builder])
+    for path in (bin_dir / "pg_dump", bin_dir / "pg_restore", lib_dir / "libpq.so.5"):
+        path.chmod(0o755)
 
 def isolate(pid):
     if run(["readlink", "/proc/self/ns/net"]).stdout == run(["readlink", f"/proc/{pid}/ns/net"]).stdout:
@@ -73,6 +106,7 @@ def main():
         run(["docker", "cp", f"{seed}:/home/runner/.", str(home)])
         run(["docker", "rm", seed])
         seed = None
+        build_pgtools(home)
         run(["chown", "-R", "1001:1001", str(home), str(journal)])
         cid = run([
             "docker", "run", "-d", "--name", args.operation, "--dns", "1.1.1.1",
@@ -81,6 +115,8 @@ def main():
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--memory", "3g", "--cpus", "2", "--pids-limit", "512",
             "--env", "RUNNER_TOOL_CACHE=/home/runner/toolcache",
+            "--env", "PATH=/home/runner/pgtools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "--env", "LD_LIBRARY_PATH=/home/runner/pgtools/lib",
             "--mount", f"type=bind,src={journal},dst=/retained",
             "--mount", f"type=bind,src={home},dst=/home/runner",
             "--entrypoint", "sleep", IMAGE, "infinity",
