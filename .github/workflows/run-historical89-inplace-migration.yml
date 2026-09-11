@@ -288,7 +288,7 @@ jobs:
             // itself decided was safe to print (never raw stderr/journal SQL).
             try {
               const errText = readFileSync(`${root}/stderr`, "utf8");
-              const match = errText.match(/historical89_inplace_failed:((?:historical89_coordinator|render_historical89_admission_rejected):[a-zA-Z0-9_:.-]+)/u);
+              const match = errText.match(/historical89_inplace_failed:((?:historical89_coordinator|render_historical89_admission_rejected|operation_unresolved):[a-zA-Z0-9_:.-]+)/u);
               if (match) result = { outcome: "fenced-unresolved", reason: match[1] };
             } catch {}
           }
