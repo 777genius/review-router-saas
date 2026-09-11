@@ -80,6 +80,26 @@ function projections() {
     [],
     { version: 1, rows: [] },
     { version: 1, rows: [] },
+    {
+      version: 1,
+      database: expected.databaseName,
+      allowConnections: true,
+      connectionLimit: -1,
+      owner: "reviewrouter",
+      raw: null,
+      entries: [
+        {
+          grantee: "PUBLIC",
+          granteeOid: "0",
+          grantor: "reviewrouter",
+          grantorOid: "10",
+          privilege: "CONNECT",
+          grantable: false,
+        },
+      ],
+      connectCapableRoles: [],
+      backends: [],
+    },
   ];
 }
 
@@ -177,13 +197,14 @@ test("real capture library publishes complete private evidence after closing; on
   assert.equal(h.closed(), 1);
   assert.deepEqual(h.queries.slice(0, setup.length), setup);
   assert.equal(h.queries.at(-1), "ROLLBACK");
-  assert.equal(h.queries.length, 18);
+  assert.equal(h.queries.length, 19);
   const serialized = await readFile(h.output, "utf8");
   const evidence = JSON.parse(serialized);
   assert.equal(evidence.collectionComplete, true);
   assert.equal(evidence.rollbackConfirmed, true);
   assert.equal(evidence.authorizesProductionMutation, false);
   assert.deepEqual(evidence.observations.ledger, h.values[4]);
+  assert.deepEqual(evidence.observations.connectAcl, h.values[9]);
   assert.ok(
     evidence.unresolvedCapabilities.includes("independent-admission-review"),
   );
