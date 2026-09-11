@@ -283,6 +283,15 @@ jobs:
                 ...(raw.outcome === "already-96" ? { verification: "read-only-snapshot", authorizesProductionMutation: false } : {}),
               };
           } catch {}
+          if (result.outcome === "fenced-unresolved" && result.reason === "operation_unresolved") {
+            // Surface only the already-allowlisted reason code the operation
+            // itself decided was safe to print (never raw stderr/journal SQL).
+            try {
+              const errText = readFileSync(`${root}/stderr`, "utf8");
+              const match = errText.match(/historical89_inplace_failed:((?:historical89_coordinator|render_historical89_admission_rejected):[a-zA-Z0-9_:.-]+)/u);
+              if (match) result = { outcome: "fenced-unresolved", reason: match[1] };
+            } catch {}
+          }
           writeFileSync(`${process.env.RUNNER_TEMP}/historical89-result/result.json`, `${JSON.stringify(result)}\n`, { mode: 0o600 });
           console.log(JSON.stringify(result));
           process.exitCode = child.status === 0 && result.outcome !== "fenced-unresolved" ? 0 : 1;
