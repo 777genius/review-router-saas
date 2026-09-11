@@ -302,7 +302,7 @@ describe("native executing source closure", () => {
     writeFileSync(
       admissionSource,
       readFileSync(admissionSource, "utf8").replace(
-        /"managed-historical89-in-place\/v1": \{[\s\S]*?\n  \},/u,
+        /"managed-historical89-in-place\/v1": \{[\s\S]*?\n {2}\},/u,
         '"managed-historical89-in-place/v1": null,',
       ),
     );

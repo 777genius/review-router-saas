@@ -790,6 +790,27 @@ export function assertHistorical89ExecutingSource(request, identity) {
       `${request.sourceCommit}^{tree}`,
     ]).trim();
     if (executingTree !== identity.sourceTree) {
+      // CI checks out a shallow, ancestry-limited clone (for pull_request
+      // events, GitHub's synthetic merge commit puts the reviewed guard
+      // commit one generation beyond the configured fetch depth). Widen the
+      // local history on demand rather than fail closed on an absent object
+      // that a full clone would already have.
+      try {
+        execFileSync(
+          "git",
+          ["cat-file", "-e", `${identity.sourceTree}^{tree}`],
+          {
+            cwd: executableRoot,
+            stdio: ["ignore", "ignore", "ignore"],
+          },
+        );
+      } catch {
+        if (git(["rev-parse", "--is-shallow-repository"]).trim() === "true")
+          execFileSync("git", ["fetch", "--unshallow", "origin"], {
+            cwd: executableRoot,
+            stdio: ["ignore", "ignore", "ignore"],
+          });
+      }
       const changed = git([
         "diff",
         "--name-only",

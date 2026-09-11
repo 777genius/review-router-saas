@@ -688,6 +688,7 @@ export function assertHistorical89AdmissionIdentity(admission) {
 // qualification fails closed. A capture does not become an approval by being
 // assigned its own digest, and no CLI path, environment value or fixture may
 // populate this map.
+// prettier-ignore
 const reviewedHistorical89Contracts = Object.freeze({
   "managed-historical89-in-place/v1": null,
 });

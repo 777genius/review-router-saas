@@ -897,8 +897,12 @@ describe("operation observation bindings", () => {
       reviewedTerminalCatalog,
       reviewedTerminalCatalogDigest,
     };
+    // A production review is now registered in source (managed-historical89-in-
+    // place/v1), so this synthetic, unregistered contract fails one step later:
+    // the real registry's pinned systemIdentifier can never match a synthetic
+    // fixture's, since that value is unique to the cluster that produced it.
     expect(() => qualifyHistorical89Admission(observations)).toThrow(
-      "independent_review_missing",
+      "review_mismatch_systemIdentifier",
     );
     expect(() =>
       qualifyHistorical89Admission({
@@ -913,7 +917,7 @@ describe("operation observation bindings", () => {
       }),
     ).toMatchObject({
       authorizesProductionMutation: false,
-      blockedBy: ["admission_qualification:independent_review_missing"],
+      blockedBy: ["admission_qualification:review_mismatch_systemIdentifier"],
     });
   });
 

@@ -382,15 +382,16 @@ describe("composed historical89 to96 in-place transaction", () => {
     expect(result.custodyEstablished).toBe(false);
     expect(result.requiresQualifiedAdmission).toBe(true);
     expect(Object.isFrozen(result)).toBe(true);
-    // The independently reviewed expectation registry is still empty, so the
-    // production qualifier still fails closed.
+    // A production review is now registered (managed-historical89-in-place/v1),
+    // so this synthetic admission fails one step later: the registry's pinned
+    // systemIdentifier can never match a synthetic fixture's own.
     expect(() =>
       qualifyHistorical89Admission({
         admission: admission(),
         defaultAcl: defaultAcl(),
         creatorEvidence: creatorEvidence(),
       } as never),
-    ).toThrow("independent_review_missing");
+    ).toThrow("review_mismatch_systemIdentifier");
   });
 
   it.each([76, 88, 90, 92, 95, 96])(
