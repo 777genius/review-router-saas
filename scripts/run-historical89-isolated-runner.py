@@ -85,7 +85,10 @@ def main():
     retained = root / args.operation
     retained.mkdir(mode=0o700)  # Never reuse or overwrite an earlier operation.
     # Reserve a fixed backing file; all job-writable disk lives inside this filesystem.
-    if shutil.disk_usage(root).free < 3584 * 1024**2:
+    # The runner base image (~700M) plus a full pnpm install of the monorepo
+    # (~1.9G, including the generated Prisma client) plus the Node toolchain
+    # setup-node caches (~200M) measured ~2.85G in practice; keep headroom.
+    if shutil.disk_usage(root).free < 6144 * 1024**2:
         raise RuntimeError("insufficient_space_for_bounded_runner")
     backing = retained / "storage.ext4"
     os.close(os.open(backing, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
@@ -94,7 +97,7 @@ def main():
     cid = seed = None
     mounted = False
     try:
-        run(["fallocate", "-l", "3G", str(backing)])
+        run(["fallocate", "-l", "5G", str(backing)])
         run(["mkfs.ext4", "-F", "-q", str(backing)])
         run(["mount", "-o", "loop,nodev,nosuid", str(backing), str(mount)])
         mounted = True
