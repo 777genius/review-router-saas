@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   assertHistorical89AdmissionIdentity,
@@ -20,7 +18,6 @@ import {
   renderHistorical89PendingBodies,
   renderHistorical89PendingDigest,
 } from "./render-historical89-admission.mjs";
-import { assertHistorical89ExecutingSource } from "./historical89-preparation-coordinator.mjs";
 import {
   assertEmptyApplicableRenderDefaultAcl,
   renderManagedEvidenceDigest,
@@ -1095,45 +1092,30 @@ describe("admission identity", () => {
 });
 
 describe("qualification", () => {
-  it("loads the reviewed bundle and binds it to current source identities", () => {
-    const bundle = readReviewedHistorical89Bundle();
-    const identity = bundle.migration.identity;
-
-    expect(readReviewedHistorical89Contract()).toEqual(bundle.migration);
-    expect(readReviewedHistorical89Preparation()).toEqual(bundle.preparation);
-    expect(identity.pendingEntriesSha256).toBe(
-      renderHistorical89PendingDigest(readHistorical89PendingIdentities()),
-    );
+  it("fails closed: no independently qualified registry exists yet", () => {
+    // Deliberate. A production-shaped capture has no independent approval in
+    // this checkout, so qualification cannot succeed here by construction.
+    for (const read of [
+      readReviewedHistorical89Contract,
+      readReviewedHistorical89Bundle,
+      readReviewedHistorical89Preparation,
+      readReviewedHistorical89ExternalRecovery,
+    ])
+      expect(() => read()).toThrow(rejected("independent_review_missing"));
     expect(() =>
-      assertHistorical89Creators(bundle.migration.creatorEvidence),
-    ).not.toThrow();
-    expect(
-      assertHistorical89ExecutingSource(
-        {
-          sourceCommit: execFileSync("git", ["rev-parse", "HEAD"], {
-            cwd: fileURLToPath(new URL("../../", import.meta.url)),
-            encoding: "utf8",
-          }).trim(),
-          artifactPath: new URL(
-            "../run-historical89-inplace-operation.mjs",
-            import.meta.url,
-          ),
-        },
-        identity,
-      ),
-    ).toBe(identity.authorizedBinaryArtifactDigest);
-    expect(() => readReviewedHistorical89ExternalRecovery()).toThrow(
-      rejected("qualified_external_recovery_missing"),
-    );
+      qualifyHistorical89Admission({
+        admission: admission(),
+        defaultAcl: defaultAcl(),
+        creatorEvidence: creatorEvidence(),
+      }),
+    ).toThrow(rejected("independent_review_missing"));
   });
 
   it("keeps the registry unreachable from any caller input", () => {
     // Neither a CLI path, an environment value nor a fixture may populate it.
     expect(moduleSource).not.toContain("process.env");
     expect(moduleSource).not.toContain("process.argv");
-    expect(moduleSource).toContain(
-      '"path": "./render-historical89-reviewed-bundle.json"',
-    );
+    expect(moduleSource).toContain('"managed-historical89-in-place/v1": null,');
   });
 
   it("rejects an unknown admission kind", () => {
