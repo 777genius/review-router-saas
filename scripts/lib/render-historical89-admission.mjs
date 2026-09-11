@@ -688,8 +688,13 @@ export function assertHistorical89AdmissionIdentity(admission) {
 // qualification fails closed. A capture does not become an approval by being
 // assigned its own digest, and no CLI path, environment value or fixture may
 // populate this map.
+// prettier-ignore
 const reviewedHistorical89Contracts = Object.freeze({
-  "managed-historical89-in-place/v1": null,
+  "managed-historical89-in-place/v1": {
+    "path": "./render-historical89-reviewed-bundle.json",
+    "digest":
+      "sha256:b9482ccf6c57d6268e9387e158ddda85cf361a14cef96b8b0f869375e72a1c12",
+  },
 });
 
 export function readReviewedHistorical89Bundle(kind = phase.kind) {

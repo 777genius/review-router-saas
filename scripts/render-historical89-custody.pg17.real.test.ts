@@ -372,10 +372,13 @@ const nonceOf = () => randomUUID().replaceAll("-", "");
   it("reaches96 under custody and records one protected operation-bound receipt", () => {
     const prepared = prepare(clone());
     const { plan, digest, coordinates } = planned(prepared);
-    // The plan never claims production authorization, and names why.
+    // The plan never claims production authorization, and names why: the
+    // registered review (managed-historical89-in-place/v1) pins production's
+    // real systemIdentifier, which this disposable PG17 fixture can never
+    // carry, since that value is unique to the cluster that produced it.
     expect(plan.authorization.authorizesProductionMutation).toBe(false);
     expect(plan.authorization.blockedBy).toContain(
-      "admission_qualification:independent_review_missing",
+      "admission_qualification:review_mismatch_systemIdentifier",
     );
     const permit = openPermit(prepared, plan);
     expect(permit).toMatchObject({

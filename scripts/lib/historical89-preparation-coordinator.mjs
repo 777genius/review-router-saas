@@ -771,6 +771,11 @@ function sourceProjection(path, bytes) {
     "const reviewedHistorical89Contracts = Object.freeze({});",
   );
 }
+const historical89ActivationPaths = Object.freeze([
+  "scripts/lib/render-historical89-admission.mjs",
+  "scripts/lib/render-historical89-admission.test.ts",
+  "scripts/lib/render-historical89-reviewed-bundle.json",
+]);
 export function assertHistorical89ExecutingSource(request, identity) {
   try {
     const git = (args) =>
@@ -780,11 +785,89 @@ export function assertHistorical89ExecutingSource(request, identity) {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
       });
-    if (
-      git(["rev-parse", `${request.sourceCommit}^{tree}`]).trim() !==
-      identity.sourceTree
-    )
-      fail("executable_source");
+    const executingTree = git([
+      "rev-parse",
+      `${request.sourceCommit}^{tree}`,
+    ]).trim();
+    if (executingTree !== identity.sourceTree) {
+      // CI checks out a shallow, ancestry-limited clone (for pull_request
+      // events, GitHub's synthetic merge commit puts the reviewed guard
+      // commit one generation beyond the configured fetch depth). Widen the
+      // local history on demand rather than fail closed on an absent object
+      // that a full clone would already have.
+      try {
+        execFileSync(
+          "git",
+          ["cat-file", "-e", `${identity.sourceTree}^{tree}`],
+          {
+            cwd: executableRoot,
+            stdio: ["ignore", "ignore", "ignore"],
+          },
+        );
+      } catch {
+        if (git(["rev-parse", "--is-shallow-repository"]).trim() === "true")
+          execFileSync("git", ["fetch", "--unshallow", "origin"], {
+            cwd: executableRoot,
+            stdio: ["ignore", "ignore", "ignore"],
+          });
+      }
+      const changed = git([
+        "diff",
+        "--name-only",
+        identity.sourceTree,
+        request.sourceCommit,
+        "--",
+      ])
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .sort();
+      if (
+        changed.some((path) => !historical89ActivationPaths.includes(path)) ||
+        !changed.includes("scripts/lib/render-historical89-admission.mjs") ||
+        !changed.includes(
+          "scripts/lib/render-historical89-reviewed-bundle.json",
+        )
+      )
+        fail("executable_source");
+      const admission = Buffer.from(
+        git([
+          "show",
+          `${request.sourceCommit}:scripts/lib/render-historical89-admission.mjs`,
+        ]),
+      );
+      const admissionPath = "scripts/lib/render-historical89-admission.mjs";
+      const reviewedAdmission = Buffer.from(
+        git(["show", `${identity.sourceTree}:${admissionPath}`]),
+      );
+      if (
+        sourceProjection(admissionPath, admission) !==
+        sourceProjection(admissionPath, reviewedAdmission)
+      )
+        fail("executable_source");
+      const match = admission
+        .toString("utf8")
+        .match(
+          /const reviewedHistorical89Contracts = Object\.freeze\((\{[\s\S]*?\})\);/u,
+        );
+      const registry = JSON.parse(match[1].replace(/,\s*\}/gu, "}"));
+      const review = registry["managed-historical89-in-place/v1"];
+      if (
+        review?.path !== "./render-historical89-reviewed-bundle.json" ||
+        Object.keys(review).sort().join() !== "digest,path"
+      )
+        fail("executable_registry_shape");
+      const bundlePath = historical89ActivationPaths[2];
+      const committedBundle = Buffer.from(
+        git(["show", `${request.sourceCommit}:${bundlePath}`]),
+      );
+      if (
+        `sha256:${createHash("sha256").update(committedBundle).digest("hex")}` !==
+          review.digest ||
+        !committedBundle.equals(readFileSync(join(executableRoot, bundlePath)))
+      )
+        fail("executable_registry_shape");
+    }
     const artifact = readFileSync(request.artifactPath);
     if (
       sha256(artifact) !== identity.authorizedBinaryArtifactDigest ||
