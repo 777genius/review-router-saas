@@ -31,7 +31,12 @@ if (!res.ok) {
   process.exit(1);
 }
 const info = await res.json();
-const ownerUrl = info.internalConnectionString || info.externalConnectionString;
+// The runner is a self-hosted GitHub Actions box outside Render's own
+// network; internalConnectionString's short hostname only resolves from
+// inside Render, so it must be the external URL here (same reachability
+// path the workflow's own REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL and
+// "Temporarily open Render DB access" step already rely on).
+const ownerUrl = info.externalConnectionString || info.internalConnectionString;
 if (!ownerUrl) {
   console.log("connection_info_missing_url");
   process.exit(1);
