@@ -127,7 +127,6 @@ jobs:
       REVIEW_ROUTER_HISTORICAL89_SOURCE_COMMIT: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
       # This is the executable being attested, NOT an output report.
       REVIEW_ROUTER_HISTORICAL89_ARTIFACT_PATH: ${{ github.workspace }}/scripts/run-historical89-inplace-operation.mjs
-      REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH: ${{ runner.temp }}/historical89-private/verification.request
       REVIEW_ROUTER_HISTORICAL89_OPERATION_ID: ${{ inputs.verification_operation_id }}
       REVIEW_ROUTER_HISTORICAL89_VERIFICATION_SHA256: ${{ inputs.verification_sha256 }}
     steps:
@@ -148,6 +147,7 @@ jobs:
         env:
           RETENTION_KEY: ${{ secrets.REVIEW_ROUTER_HISTORICAL89_RETENTION_KEY }}
           VERIFICATION_JSON: ${{ secrets.REVIEW_ROUTER_HISTORICAL89_VERIFICATION_JSON }}
+          REVIEW_ROUTER_HISTORICAL89_VERIFICATION_PATH: ${{ runner.temp }}/historical89-private/verification.request
         run: |
           set -euo pipefail
           umask 077
