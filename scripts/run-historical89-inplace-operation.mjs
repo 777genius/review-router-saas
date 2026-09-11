@@ -1172,12 +1172,27 @@ export async function runHistorical89Cli() {
     );
   } catch (error) {
     const raw = String(error?.message ?? "");
-    const message =
+    let message =
       /^(?:historical89_coordinator|render_historical89_admission_rejected):[a-zA-Z0-9_:.-]+$/u.test(
         raw,
       )
         ? raw
         : "operation_unresolved";
+    // Never the raw message (may embed connection details or query text).
+    // A Postgres SQLSTATE code and the thrown error's constructor name are
+    // both short, well-known, non-sensitive classifiers safe to surface.
+    if (message === "operation_unresolved") {
+      const sqlstate = /^[0-9A-Z]{5}$/u.test(error?.code ?? "")
+        ? error.code
+        : null;
+      const kind = /^[A-Za-z][A-Za-z0-9]{0,39}$/u.test(
+        error?.constructor?.name ?? "",
+      )
+        ? error.constructor.name
+        : null;
+      if (sqlstate || kind)
+        message = `operation_unresolved:${[kind, sqlstate].filter(Boolean).join("_")}`;
+    }
     console.error(`historical89_inplace_failed:${message}`);
     process.exit(1);
   }
