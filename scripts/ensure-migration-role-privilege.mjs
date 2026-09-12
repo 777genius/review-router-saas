@@ -1,19 +1,19 @@
+import { randomBytes } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import pg from "pg";
 
-// One-time, idempotent prerequisite: reviewrouter_release_migration must be
-// able to `GRANT reviewrouter TO reviewrouter_release_migration WITH INHERIT
-// TRUE, SET TRUE` inside its own migration transaction (see
-// render-historical89-preparation-custody.mjs's assumeOwner/releaseOwner).
-// That self-service GRANT requires the role to already hold ADMIN OPTION on
-// `reviewrouter`. Fetch an owner-level connection from the Render API (using
-// the same RENDER_API_KEY secret already used for allowlist management, no
-// new credential) and grant that admin-option membership if it is missing.
-// Never print the connection string.
+// historical89 SQL (render-historical89-preparation-custody.mjs) requires
+// session_user = current_user = datdba = `reviewrouter`. The production
+// secret REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL logs in as
+// `reviewrouter_release_migration`, which cannot satisfy that identity
+// guard and also cannot be granted membership in `reviewrouter`: a
+// non-superuser cannot GRANT its own role without ADMIN OPTION on itself.
+// Bind the Render owner connection (databaseUser `reviewrouter`) into
+// GITHUB_ENV for the following operation step instead. Never print the URL.
 
 const apiKey = process.env.RENDER_API_KEY;
 const dbId = process.env.RENDER_POSTGRES_ID;
-const migrationRole = "reviewrouter_release_migration";
-const targetRole = "reviewrouter";
+const coordinator = "reviewrouter";
 
 if (!apiKey || !dbId) {
   console.log("missing_render_env");
@@ -31,11 +31,6 @@ if (!res.ok) {
   process.exit(1);
 }
 const info = await res.json();
-// The runner is a self-hosted GitHub Actions box outside Render's own
-// network; internalConnectionString's short hostname only resolves from
-// inside Render, so it must be the external URL here (same reachability
-// path the workflow's own REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL and
-// "Temporarily open Render DB access" step already rely on).
 const rawOwnerUrl =
   info.externalConnectionString || info.internalConnectionString;
 if (!rawOwnerUrl) {
@@ -43,30 +38,54 @@ if (!rawOwnerUrl) {
   process.exit(1);
 }
 
-// Render's connection-info API returns a bare URL with no sslmode, but
-// Render requires SSL on the external endpoint (SQLSTATE 28000 otherwise).
-// The pre-existing REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL secret works
-// because it already carries sslmode=require; match that convention here.
 const ownerUrlObject = new URL(rawOwnerUrl);
-if (!ownerUrlObject.searchParams.has("sslmode"))
-  ownerUrlObject.searchParams.set("sslmode", "require");
+const sslmode = ownerUrlObject.searchParams.get("sslmode") || "require";
+ownerUrlObject.search = "";
+ownerUrlObject.searchParams.set(
+  "sslmode",
+  sslmode === "disable" ? "require" : sslmode,
+);
 const ownerUrl = ownerUrlObject.toString();
 
 const client = new pg.Client({ connectionString: ownerUrl });
 try {
   await client.connect();
-  const already = await client.query(
-    "select 1 from pg_auth_members m join pg_roles g on g.oid = m.roleid join pg_roles r on r.oid = m.member where g.rolname = $1 and r.rolname = $2 and m.admin_option",
-    [targetRole, migrationRole],
+  const who = await client.query(
+    `select current_user as current_user,
+            session_user as session_user,
+            (select rolsuper from pg_catalog.pg_roles
+              where rolname = session_user) as superuser,
+            (select r.rolname from pg_catalog.pg_database d
+               join pg_catalog.pg_roles r on r.oid = d.datdba
+              where d.datname = current_database()) as datdba`,
   );
-  if (already.rowCount > 0) {
-    console.log("already_granted");
-  } else {
-    await client.query(
-      `GRANT ${targetRole} TO ${migrationRole} WITH ADMIN TRUE, INHERIT TRUE, SET TRUE`,
-    );
-    console.log("granted");
+  const row = who.rows[0] ?? {};
+  if (
+    row.current_user !== coordinator ||
+    row.session_user !== coordinator ||
+    row.superuser !== false ||
+    row.datdba !== coordinator
+  ) {
+    console.log("owner_session_mismatch");
+    process.exit(1);
   }
+  const envFile = process.env.GITHUB_ENV;
+  if (!envFile) {
+    console.log("missing_github_env");
+    process.exit(1);
+  }
+  if (process.env.GITHUB_ACTIONS === "true") {
+    const password = ownerUrlObject.password;
+    if (password) console.log(`::add-mask::${decodeURIComponent(password)}`);
+    console.log(`::add-mask::${ownerUrl}`);
+  }
+  const delim = `OWNERURL_${randomBytes(16).toString("hex")}`;
+  appendFileSync(
+    envFile,
+    `REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL<<${delim}\n${ownerUrl}\n${delim}\n`,
+    { mode: 0o600 },
+  );
+  console.log("owner_session_bound");
 } finally {
   await client.end().catch(() => {});
 }
