@@ -708,7 +708,17 @@ export async function runHistorical89Operation({
         );
       }
       const fleetNow = await observeFleet(render, fleet);
-      await restrictAdmission();
+      for (let poll = 0; poll < 30; poll++) {
+        const currentAcl = await readJson(
+          client,
+          renderHistorical89ConnectAclSql,
+        );
+        const clientBackends = (currentAcl.backends ?? []).filter(
+          (b) => !b.superuser && b.role !== coordinatorRole,
+        );
+        if (clientBackends.length === 0) break;
+        if (poll < 29) await delay(1000);
+      }
       await client.query(renderHistorical89FleetQuiescenceGuardSql);
       await client.query(renderManagedTemporaryMembershipSql);
       try {
