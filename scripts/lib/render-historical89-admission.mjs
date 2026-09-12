@@ -1041,17 +1041,18 @@ function comparePreparationObservations(bundle, observation) {
   const connect = observation.connectAcl;
   if (
     !Array.isArray(connect?.backends) ||
-    connect.backends.some(
-      (backend) =>
-        !name(backend.role) ||
-        backend.superuser !== false ||
-        // Render PG17 reports backend_type as null for ordinary client
-        // sessions (captured 2026-09-10 against this same database). Treat
-        // that as a client backend; still refuse any other typed backend
-        // and every superuser session.
-        (backend.backendType !== "client backend" &&
-          backend.backendType != null),
-    ) ||
+    connect.backends
+      .filter(
+        (backend) =>
+          // Render PG17 reports backend_type as null for ordinary client
+          // sessions. Autovacuum and other internals are superuser-typed and
+          // appear after DDL such as DROP SCHEMA CASCADE; they are not client
+          // sessions and cannot be excluded by CONNECT. Inspect client
+          // backends only; still refuse every superuser client session.
+          backend.backendType === "client backend" ||
+          backend.backendType == null,
+      )
+      .some((backend) => !name(backend.role) || backend.superuser !== false) ||
     !Array.isArray(connect.connectCapableRoles) ||
     connect.connectCapableRoles.some(
       (role) =>
