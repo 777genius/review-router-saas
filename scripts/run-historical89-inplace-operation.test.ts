@@ -793,7 +793,12 @@ describe("historical89 callable preparation orchestration", () => {
     expect(test.events.indexOf("srv-api-resume")).toBeLessThan(
       test.events.indexOf("admission-restore"),
     );
-    expect(test.flags.readerCount).toBeGreaterThanOrEqual(3);
+    expect(test.events).not.toContain("reader-connect-grant");
+    expect(test.events).not.toContain("reader-connect-revoke");
+    expect(test.events.indexOf("restrict")).toBeLessThan(
+      test.events.indexOf("reader-open"),
+    );
+    expect(test.flags.readerCount).toBeGreaterThanOrEqual(2);
     expect(test.journal.get("verification-1.pin").digest).toMatch(/^sha256:/);
   });
   it("accepts materialized effective ACL after restoring an original null default", async () => {
@@ -891,16 +896,15 @@ describe("historical89 callable preparation orchestration", () => {
       ),
     ).toBe(false);
   });
-  it("requires the first fresh reader login before any service effects", async () => {
+  it("does not grant reader CONNECT before restriction admits it", async () => {
     const test = setup();
     test.flags.failReaderAt = 1;
     await expect(test.run()).rejects.toThrow("reader login failed");
     expect(test.events).toContain("reader-provision");
-    expect(
-      test.events.some(
-        (event) => event.endsWith("-post") || event.endsWith("-get"),
-      ),
-    ).toBe(false);
+    expect(test.events).toContain("restrict");
+    expect(test.events).not.toContain("reader-connect-grant");
+    expect(test.events).not.toContain("reader-connect-revoke");
+    expect(test.events).not.toContain("permit");
     const retained = test.journal
       .keys("")
       .map((key) => test.journal.bytes(key).toString("utf8"))
@@ -910,7 +914,7 @@ describe("historical89 callable preparation orchestration", () => {
   });
   it("blocks the permit when the fresh restricted reader cannot authenticate", async () => {
     const test = setup();
-    test.flags.failReaderAt = 2;
+    test.flags.failReaderAt = 1;
     await expect(test.run()).rejects.toThrow("reader login failed");
     expect(test.events).toContain("restrict");
     expect(test.events).not.toContain("permit");

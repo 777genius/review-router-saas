@@ -41,6 +41,7 @@ import {
 } from "./lib/render-managed-operation-custody.mjs";
 import {
   renderHistorical89AdmissionRestrictionSql,
+  renderHistorical89AdmissionRestoreSql,
   renderHistorical89ConnectAclSql,
   renderHistorical89SessionDrainSql,
   renderHistorical89FleetQuiescenceGuardSql,
@@ -83,6 +84,27 @@ const nonce = () => randomUUID().replaceAll("-", "");
 const gateSql = `SET search_path = pg_catalog, public;\n${renderManagedRuntimeGateSql};`;
 const same = (a, b) => digest(a) === digest(b);
 const readerRole = "reviewrouter_operation_custody_reader";
+const connectGrantees = (observation) =>
+  new Set(
+    (observation?.entries ?? [])
+      .filter((entry) => entry.privilege === "CONNECT")
+      .map((entry) => entry.grantee),
+  );
+const leftoverRestriction = (live, reviewed) => {
+  const liveConnect = connectGrantees(live);
+  const withdraw = assertHistorical89OriginalConnectAcl(reviewed).withdraw.map(
+    (entry) => entry.grantee,
+  );
+  return (
+    liveConnect.has(readerRole) &&
+    withdraw.every((grantee) => !liveConnect.has(grantee))
+  );
+};
+const reviewedOriginalConnectAcl = (bundle, live) => ({
+  ...bundle.preparation.originalDatabaseAcl,
+  backends: live?.backends ?? [],
+  connectCapableRoles: live?.connectCapableRoles ?? [],
+});
 async function connect(connectionString) {
   const client = new pg.Client({ connectionString });
   await client.connect();
@@ -255,6 +277,30 @@ export async function runHistorical89Operation({
           leftover.reader
         )
           fail("abandoned_preparation_unremoved");
+      }
+      const liveAcl = await readJson(client, renderHistorical89ConnectAclSql);
+      const reviewed = bundle.preparation.originalDatabaseAcl;
+      // A previous attempt may have committed restriction and then died
+      // before journal.complete. Undo only drops abandoned prepare; restore
+      // the reviewed original CONNECT policy so capture can match the bundle.
+      if (reviewed) {
+        const reviewedAcl = reviewedOriginalConnectAcl(bundle, liveAcl);
+        if (leftoverRestriction(liveAcl, reviewedAcl)) {
+          await client.query(
+            renderHistorical89AdmissionRestoreSql(reviewedAcl),
+          );
+          const restored = await readJson(
+            client,
+            renderHistorical89ConnectAclSql,
+          );
+          if (
+            leftoverRestriction(
+              restored,
+              reviewedOriginalConnectAcl(bundle, restored),
+            )
+          )
+            fail("abandoned_restriction_unrestored");
+        }
       }
       const capture = await captureHistorical89Prerequisites({
         client,
@@ -565,23 +611,10 @@ export async function runHistorical89Operation({
       finalizedHint.finalized ? binding : undefined,
       readerPassword,
     );
-    // Production original ACL has no PUBLIC CONNECT, so the prepared LOGIN
-    // reader cannot authenticate until restriction admits it. Grant only for
-    // this preflight, then restore the compared original ACL so restriction's
-    // baseline still matches the journaled connect policy.
-    const readerConnect = (verb) =>
-      `${verb} CONNECT ON DATABASE "${identity.databaseName.replaceAll('"', '""')}" ${verb === "GRANT" ? "TO" : "FROM"} ${readerRole}`;
-    await client.query(readerConnect("GRANT"));
-    try {
-      await authenticateReader(
-        openReader,
-        client,
-        identity,
-        finalizedHint.finalized ? binding : undefined,
-      );
-    } finally {
-      await client.query(readerConnect("REVOKE"));
-    }
+    // Do not GRANT/REVOKE CONNECT before restriction: that rewrite of datacl
+    // is what made production restriction raise
+    // historical89_admission_baseline_changed. The reader is admitted by
+    // restriction itself, then authenticated below.
     if (!binding) {
       for (const service of fleet) {
         const key = service.serviceId;
@@ -1212,7 +1245,7 @@ export async function runHistorical89Cli() {
     let message =
       /^(?:historical89_coordinator|historical89_capture|render_historical89_admission_rejected|render_historical89_operation_rejected|render_historical89_boundary_rejected|render_managed_cutover_rejected|render_managed_catalog_rejected|render_schema_handoff_rejected):[a-zA-Z0-9_:.-]+$/u.test(
         raw,
-      )
+      ) || /^(?:historical89_[a-z0-9_]+)$/u.test(raw)
         ? raw
         : "operation_unresolved";
     // Never the raw message (may embed connection details or query text).
