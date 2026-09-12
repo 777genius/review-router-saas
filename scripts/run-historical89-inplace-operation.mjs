@@ -561,14 +561,23 @@ export async function runHistorical89Operation({
       finalizedHint.finalized ? binding : undefined,
       readerPassword,
     );
-    // A missing original CONNECT capability fails closed; never suspend services
-    // first or widen admission just to make this authentication check pass.
-    await authenticateReader(
-      openReader,
-      client,
-      identity,
-      finalizedHint.finalized ? binding : undefined,
-    );
+    // Production original ACL has no PUBLIC CONNECT, so the prepared LOGIN
+    // reader cannot authenticate until restriction admits it. Grant only for
+    // this preflight, then restore the compared original ACL so restriction's
+    // baseline still matches the journaled connect policy.
+    const readerConnect = (verb) =>
+      `${verb} CONNECT ON DATABASE "${identity.databaseName.replaceAll('"', '""')}" ${verb === "GRANT" ? "TO" : "FROM"} ${readerRole}`;
+    await client.query(readerConnect("GRANT"));
+    try {
+      await authenticateReader(
+        openReader,
+        client,
+        identity,
+        finalizedHint.finalized ? binding : undefined,
+      );
+    } finally {
+      await client.query(readerConnect("REVOKE"));
+    }
     if (!binding) {
       for (const service of fleet) {
         const key = service.serviceId;
