@@ -34,11 +34,13 @@ def build_pgtools(home):
         run(["docker", "exec", builder, "bash", "-c", """
 set -euo pipefail
 apt-get update -qq
-apt-get install -y -qq curl gnupg lsb-release >/dev/null
+apt-get install -y -qq curl gnupg lsb-release patchelf >/dev/null
 curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
 apt-get update -qq
 apt-get install -y -qq postgresql-client-17 >/dev/null
+patchelf --set-rpath '$ORIGIN/../lib' /usr/lib/postgresql/17/bin/pg_dump
+patchelf --set-rpath '$ORIGIN/../lib' /usr/lib/postgresql/17/bin/pg_restore
 """])
         run(["docker", "cp", f"{builder}:/usr/lib/postgresql/17/bin/pg_dump", str(bin_dir / "pg_dump")])
         run(["docker", "cp", f"{builder}:/usr/lib/postgresql/17/bin/pg_restore", str(bin_dir / "pg_restore")])

@@ -135,6 +135,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020

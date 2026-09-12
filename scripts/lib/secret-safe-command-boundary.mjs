@@ -188,6 +188,9 @@ export function createSecretSafePostgresInvocation({
       LC_ALL: "C.UTF-8",
       PGPASSFILE: passfile,
       PGSSLMODE: connection.sslmode,
+      ...(environment.LD_LIBRARY_PATH
+        ? { LD_LIBRARY_PATH: environment.LD_LIBRARY_PATH }
+        : {}),
       ...(pgHostAddress ? { PGHOSTADDR: pgHostAddress } : {}),
       ...(connection.applicationName
         ? { PGAPPNAME: connection.applicationName }
