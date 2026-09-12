@@ -332,8 +332,8 @@ function setup() {
                       },
                     ])
                   : flags.backendsDrift &&
-                    connectAclCalls >= 3 &&
-                    suspended.size < fleet.length
+                      connectAclCalls >= 3 &&
+                      suspended.size < fleet.length
                     ? [
                         {
                           role: "reviewrouter_worker",
@@ -516,7 +516,16 @@ function setup() {
             }
             return json(permit);
           }
-          if (sql.includes("custody_current_permit(")) return json(permit);
+          if (sql.includes("custody_current_permit(")) {
+            // The reviewed catalog raises instead of returning NULL when the
+            // permit row does not exist yet.
+            if (permit === null) {
+              throw Object.assign(new Error("custody_permit_absent"), {
+                code: "P0001",
+              });
+            }
+            return json(permit);
+          }
           if (
             sql.startsWith(
               "SELECT COALESCE(release_operation_custody.custody_read_effect(",
