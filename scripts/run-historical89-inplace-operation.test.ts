@@ -810,17 +810,17 @@ describe("historical89 callable preparation orchestration", () => {
       );
     }
     expect(test.flags.backupCount).toBe(1);
-    expect(test.events.indexOf("restrict")).toBeLessThan(
-      test.events.indexOf("backup"),
-    );
     expect(
       test.events.lastIndexOf("fleet-guard", test.events.indexOf("backup")),
-    ).toBeGreaterThan(test.events.indexOf("restrict"));
+    ).toBeGreaterThan(test.events.indexOf("srv-worker-result-commit"));
     expect(
       test.events.indexOf("fleet-guard", test.events.indexOf("backup") + 1),
     ).toBeGreaterThan(test.events.indexOf("backup"));
     expect(test.events.indexOf("backup")).toBeLessThan(
-      test.events.indexOf("migration"),
+      test.events.indexOf("finalize-commit"),
+    );
+    expect(test.events.indexOf("finalize-commit")).toBeLessThan(
+      test.events.indexOf("restrict"),
     );
     expect(test.journal.get("binding").recoveryIdentitySha256).toBe(
       test.journal.get("recovery").sha256,
@@ -859,7 +859,7 @@ describe("historical89 callable preparation orchestration", () => {
     expect(test.suspended).toEqual(
       new Set(["srv-api", "srv-web", "srv-worker"]),
     );
-    expect(test.events).toContain("restrict");
+    expect(test.events).not.toContain("restrict");
     expect(test.events).not.toContain("migration");
   });
   it.each([
@@ -893,7 +893,7 @@ describe("historical89 callable preparation orchestration", () => {
     await expect(test.run()).rejects.toThrow("finalized mismatch");
     expect(test.events).toContain("rollback");
     expect(test.events).not.toContain("finalize-commit");
-    expect(test.events).toContain("restrict");
+    expect(test.events).not.toContain("restrict");
     expect(test.events).not.toContain("permit");
     const original = test.journal.bytes("finalize.request");
     fixtures.mismatch = "";
