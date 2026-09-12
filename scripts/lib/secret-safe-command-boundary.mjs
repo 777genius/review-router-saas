@@ -188,6 +188,7 @@ export function createSecretSafePostgresInvocation({
       LC_ALL: "C.UTF-8",
       PGPASSFILE: passfile,
       PGSSLMODE: connection.sslmode,
+      PGCHANNELBINDING: "disable",
       ...(environment.LD_LIBRARY_PATH
         ? { LD_LIBRARY_PATH: environment.LD_LIBRARY_PATH }
         : {}),

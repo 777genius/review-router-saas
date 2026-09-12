@@ -17,6 +17,8 @@ import {
   renderManagedEvidenceDigest as digest,
   renderManagedLedgerSql,
   renderManagedMembershipSql,
+  renderManagedTemporaryMembershipSql,
+  renderManagedMembershipCleanupSql,
 } from "./lib/render-schema-handoff-policy.mjs";
 import { renderManagedCatalogSql } from "./lib/render-managed-catalog.mjs";
 import { renderManagedRuntimeGateSql } from "./lib/render-managed-workflow-cutover.mjs";
@@ -313,6 +315,7 @@ export async function runHistorical89Operation({
         )
           fail("abandoned_preparation_unremoved");
       }
+      await client.query(renderManagedMembershipCleanupSql).catch(() => {});
       const capture = await captureHistorical89Prerequisites({
         client,
         idleClient: true,
@@ -707,7 +710,12 @@ export async function runHistorical89Operation({
       const fleetNow = await observeFleet(render, fleet);
       await restrictAdmission();
       await client.query(renderHistorical89FleetQuiescenceGuardSql);
-      recovery = await captureBackup(identity);
+      await client.query(renderManagedTemporaryMembershipSql);
+      try {
+        recovery = await captureBackup(identity);
+      } finally {
+        await client.query(renderManagedMembershipCleanupSql);
+      }
       await client.query(renderHistorical89FleetQuiescenceGuardSql);
       if (
         recovery?.format !== "postgresql-custom-gpg" ||

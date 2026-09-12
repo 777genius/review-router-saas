@@ -108,6 +108,7 @@ describe("secret-safe script command boundary", () => {
       expect(boundary).not.toMatch(
         /invocation-password-canary|sql-input-canary|postgresql:\/\//u,
       );
+      expect(invocation.environment.PGCHANNELBINDING).toBe("disable");
       expect(invocation.input).toBe("SELECT 'sql-input-canary'");
       expect(invocation.args).toContain("-At");
     } finally {
