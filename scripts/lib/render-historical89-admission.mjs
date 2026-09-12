@@ -701,7 +701,7 @@ const reviewedHistorical89Contracts = Object.freeze({
   "managed-historical89-in-place/v1": {
     "path": "./render-historical89-reviewed-bundle.json",
     "digest":
-      "sha256:bd954391f317f787a98f2de18feee14ff6f4d25382176391f71ad82e30592d47",
+      "sha256:f3c3c0af55f8b3f8ae3c8e784794a76179921d1b8fa3883414349aaa48fe59c1",
   },
 });
 
@@ -1047,10 +1047,12 @@ function comparePreparationObservations(bundle, observation) {
           // Render PG17 reports backend_type as null for ordinary client
           // sessions. Autovacuum and other internals are superuser-typed and
           // appear after DDL such as DROP SCHEMA CASCADE; they are not client
-          // sessions and cannot be excluded by CONNECT. Inspect client
-          // backends only; still refuse every superuser client session.
-          backend.backendType === "client backend" ||
-          backend.backendType == null,
+          // sessions and cannot be excluded by CONNECT. Superuser processes
+          // (such as autovacuum workers) run under the postgres role and are
+          // not client backends. Inspect nonsuperuser client backends only.
+          backend.superuser === false &&
+          (backend.backendType === "client backend" ||
+            backend.backendType == null),
       )
       .some((backend) => !name(backend.role) || backend.superuser !== false) ||
     !Array.isArray(connect.connectCapableRoles) ||
