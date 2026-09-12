@@ -1129,6 +1129,13 @@ export function compareHistorical89Original(bundle, observation) {
       bundle.preparation.originalCatalogDigest,
     );
   } catch (error) {
+    if (
+      error instanceof Error &&
+      /^render_managed_catalog_rejected:[a-z0-9_]+$/u.test(error.message)
+    )
+      fail(
+        `review_original_catalog:${error.message.slice("render_managed_catalog_rejected:".length)}`,
+      );
     reraiseAdmission(error, "review_original_catalog");
   }
   if (observation.catalog.database !== bundle.migration.identity.databaseName)
@@ -1164,6 +1171,13 @@ export function compareHistorical89PreparationStage(
       bundle.preparation[`${stage}CatalogDigest`],
     );
   } catch (error) {
+    if (
+      error instanceof Error &&
+      /^render_managed_catalog_rejected:[a-z0-9_]+$/u.test(error.message)
+    )
+      fail(
+        `review_preparation_catalog:${error.message.slice("render_managed_catalog_rejected:".length)}`,
+      );
     reraiseAdmission(error, "review_preparation_catalog");
   }
   const stored = observation.preparation;

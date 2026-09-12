@@ -867,11 +867,24 @@ describe("operation observation bindings", () => {
     ).not.toThrow();
     const drift = structuredClone(observation);
     drift.catalog.facts.push({
-      family: "authority",
+      family: "relation",
       fact: { unrelatedGrant: true },
     } as never);
     expect(() => compareHistorical89Original(bundle, drift)).toThrow(
-      "render_historical89_admission_rejected:review_original_catalog",
+      "render_historical89_admission_rejected:review_original_catalog:drift",
+    );
+    const extraAuthority = structuredClone(observation);
+    extraAuthority.catalog.facts.push({
+      family: "authority",
+      fact: { unrelatedGrant: true },
+    } as never);
+    expect(() => compareHistorical89Original(bundle, extraAuthority)).toThrow(
+      "render_historical89_admission_rejected:review_original_catalog:authority",
+    );
+    const versionDrift = structuredClone(observation);
+    versionDrift.catalog.serverVersionNum = 170011;
+    expect(() => compareHistorical89Original(bundle, versionDrift)).toThrow(
+      "render_historical89_admission_rejected:review_original_catalog:observation",
     );
     const aclDrift = structuredClone(observation);
     aclDrift.connectAcl.entries[0].grantorOid = "999999";
