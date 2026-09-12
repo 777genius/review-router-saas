@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { acquireCurrentScopeGuards } from "@reviewrouter/platform-db";
 import {
   bindScmRepositoryIdentity,
   normalizeScmSourceBaseUrl,
@@ -56,8 +57,25 @@ export class PrismaScmRepositoryIdentityRepository
   async resolveOrRegisterScmRepositoryIdentity(input: {
     readonly identity: ScmRepositoryIdentity;
   }) {
+    // A successful resolution is only an observation, never a current proof.
+    // Do not serialize this read-only branch with every scope writer.
+    const resolved = await this.findScmRepositoryIdentityByExternalIdentity(
+      input.identity,
+    );
+    if (resolved) {
+      return {
+        status: ScmRepositoryIdentityResolveStatus.Restored,
+        identity: resolved,
+      } as const;
+    }
     const externalKey = scmRepositoryExternalIdentityKey(input.identity);
     return this.prisma.$transaction(async (transaction) => {
+      // Identity may be absent, unbound, or bound in another workspace. Global
+      // exclusive protects the complete old/new union without a scope-discovery
+      // read or late upgrade. Keep this transaction local and short.
+      await acquireCurrentScopeGuards(transaction, [
+        { scope: "global", mode: "exclusive" },
+      ]);
       await lockReviewRunControlKey(
         transaction,
         "scm-external-identity",
@@ -110,6 +128,12 @@ export class PrismaScmRepositoryIdentityRepository
     readonly boundAt: Date;
   }) {
     return this.prisma.$transaction(async (transaction) => {
+      // Identity may be absent, unbound, or bound in another workspace. Global
+      // exclusive protects the complete old/new union without a scope-discovery
+      // read or late upgrade. Keep this transaction local and short.
+      await acquireCurrentScopeGuards(transaction, [
+        { scope: "global", mode: "exclusive" },
+      ]);
       await lockReviewRunControlKey(
         transaction,
         "scm-identity",
@@ -234,6 +258,12 @@ export class PrismaScmRepositoryIdentityRepository
     };
   }) {
     return this.prisma.$transaction(async (transaction) => {
+      // Identity may be absent, unbound, or bound in another workspace. Global
+      // exclusive protects the complete old/new union without a scope-discovery
+      // read or late upgrade. Keep this transaction local and short.
+      await acquireCurrentScopeGuards(transaction, [
+        { scope: "global", mode: "exclusive" },
+      ]);
       await lockReviewRunControlKey(
         transaction,
         "scm-identity",
