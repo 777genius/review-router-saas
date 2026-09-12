@@ -221,6 +221,16 @@ function projection(sql) {
 
 const connectAclProjection = projection(renderHistorical89ConnectAclSql);
 
+// GRANT/REVOKE can rebuild datacl with the same grants in a different array
+// order or jsonb key order. Compare the CONNECT/CREATE/TEMPORARY set, not the
+// raw jsonb bytes, so restriction/restore fail only on a real baseline change.
+function distinctCanonicalEntries(observedEntries) {
+  const sorted = (expr) =>
+    `(SELECT COALESCE(jsonb_agg(elem ORDER BY elem->>'privilege' COLLATE "C", elem->>'granteeOid', elem->>'grantorOid'), '[]'::jsonb) FROM jsonb_array_elements(${expr}) AS elem)`;
+  return `${sorted(`(${connectAclProjection})->'entries'`)}
+     IS DISTINCT FROM ${sorted(`${literal(JSON.stringify(observedEntries))}::jsonb`)}`;
+}
+
 /**
  * Terminate every remaining nonsuperuser backend on this database.
  *
@@ -250,7 +260,7 @@ BEGIN
   JOIN pg_catalog.pg_roles r ON r.oid=a.usesysid
   WHERE a.datname=pg_catalog.current_database()
     AND a.pid<>pg_catalog.pg_backend_pid() AND NOT r.rolsuper;
-  FOR i IN 1..50 LOOP
+  FOR i IN 1..150 LOOP
     -- pg_stat_activity is cached for the lifetime of a transaction; without
     -- clearing that snapshot this loop would keep re-reading the state from
     -- before PERFORM above ran and never observe a terminated backend leave.
@@ -260,7 +270,7 @@ BEGIN
     WHERE a.datname=pg_catalog.current_database()
       AND a.pid<>pg_catalog.pg_backend_pid() AND NOT r.rolsuper;
     EXIT WHEN remaining=0;
-    PERFORM pg_catalog.pg_sleep(0.1);
+    PERFORM pg_catalog.pg_sleep(0.2);
   END LOOP;
   IF remaining<>0 THEN
     RAISE EXCEPTION 'historical89_session_drain_incomplete';
@@ -292,8 +302,7 @@ DO $admission_identity$ BEGIN
      OR (SELECT rolsuper FROM pg_roles WHERE rolname=current_user) THEN
     RAISE EXCEPTION 'historical89_admission_identity';
   END IF;
-  IF (${connectAclProjection})->'entries'
-     IS DISTINCT FROM ${literal(JSON.stringify(observation.entries))}::jsonb THEN
+  IF ${distinctCanonicalEntries(observation.entries)} THEN
     RAISE EXCEPTION 'historical89_admission_baseline_changed';
   END IF;
 END $admission_identity$;
@@ -332,8 +341,7 @@ END $restore_identity$;
 ${grants}
 REVOKE CONNECT ON DATABASE ${database} FROM ${quoted(custodyReader)};
 DO $restore_exactness$ BEGIN
-  IF (${connectAclProjection})->'entries'
-     IS DISTINCT FROM ${literal(JSON.stringify(observation.entries))}::jsonb THEN
+  IF ${distinctCanonicalEntries(observation.entries)} THEN
     RAISE EXCEPTION 'historical89_restore_not_exact';
   END IF;
 END $restore_exactness$;
