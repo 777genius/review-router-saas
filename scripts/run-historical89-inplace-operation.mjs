@@ -57,6 +57,8 @@ import {
   renderHistorical89PreparationReadSql,
   renderHistorical89PreparationService,
   renderHistorical89PreparationObserve,
+  renderHistorical89PreparationPresenceSql,
+  renderHistorical89PreparationUndoAbandonedSql,
 } from "./lib/render-historical89-preparation-custody.mjs";
 import { captureHistorical89Prerequisites } from "./lib/render-historical89-prerequisite-capture.mjs";
 import {
@@ -228,6 +230,28 @@ export async function runHistorical89Operation({
     let original = journal.get("original");
     let identity = journal.get("identity");
     if (!identity) {
+      const abandoned = await readJson(
+        client,
+        renderHistorical89PreparationPresenceSql,
+      );
+      if (abandoned.permit) fail("abandoned_preparation_finalized");
+      if (abandoned.present) {
+        // 10th production dispatch committed prepare, then died before a
+        // resumable identity on this executable. A new journal cannot adopt
+        // that catalog as original. Remove only this unfinalized staging.
+        await client.query(renderHistorical89PreparationUndoAbandonedSql());
+        const leftover = await readJson(
+          client,
+          renderHistorical89PreparationPresenceSql,
+        );
+        if (
+          leftover.present ||
+          leftover.permit ||
+          leftover.owner ||
+          leftover.reader
+        )
+          fail("abandoned_preparation_unremoved");
+      }
       const capture = await captureHistorical89Prerequisites({
         client,
         idleClient: true,

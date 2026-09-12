@@ -281,7 +281,15 @@ function setup() {
             });
           if (sql.includes("pg_try_advisory_lock")) return json(true);
           if (sql.includes("'present',to_regnamespace"))
-            return json({ present: !!row, roles: row ? 2 : 0 });
+            return json({
+              present: !!row,
+              roles: row ? 2 : 0,
+              permit: false,
+              owner: !!row,
+              reader: !!row,
+            });
+          if (sql.includes("DROP SCHEMA release_operation_custody CASCADE"))
+            return { command: "COMMIT", rows: [] };
           if (sql.includes("'finalized',to_regclass"))
             return json({ finalized });
           if (

@@ -512,3 +512,42 @@ export function renderHistorical89PreparationFinalize(
     ),
   );
 }
+
+/** Probe used before original admission. Abandoned prepare is the schema
+ * without the later permit objects; finalized custody must not be dropped. */
+export const renderHistorical89PreparationPresenceSql = `SELECT jsonb_build_object(
+  'present',to_regnamespace('${schema}') IS NOT NULL,
+  'permit',to_regclass('${schema}.operation_permit') IS NOT NULL,
+  'owner',to_regrole('${owner}') IS NOT NULL,
+  'reader',to_regrole('${reader}') IS NOT NULL)`;
+
+/** Roll back a committed prepare that never reached identity-bound resume.
+ * Only valid on the historical89 ledger with no permit installed. */
+export function renderHistorical89PreparationUndoAbandonedSql() {
+  return `BEGIN ISOLATION LEVEL READ COMMITTED;
+SET LOCAL search_path = pg_catalog, public;
+SET LOCAL lock_timeout = '5000ms';
+SELECT pg_catalog.pg_advisory_xact_lock(1783285769,89);
+DO $undo_identity$ BEGIN
+  IF session_user <> '${coordinator}' OR current_user <> '${coordinator}'
+    OR (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname=session_user) THEN
+    RAISE EXCEPTION 'preparation_undo_identity'; END IF;
+  IF (SELECT count(*) FROM public._prisma_migrations) IS DISTINCT FROM 89 THEN
+    RAISE EXCEPTION 'preparation_undo_ledger'; END IF;
+  IF to_regclass('${schema}.operation_permit') IS NOT NULL THEN
+    RAISE EXCEPTION 'preparation_undo_finalized'; END IF;
+  IF to_regnamespace('${schema}') IS NULL
+    OR to_regrole('${owner}') IS NULL
+    OR to_regrole('${reader}') IS NULL THEN
+    RAISE EXCEPTION 'preparation_undo_incomplete'; END IF;
+END $undo_identity$;
+GRANT ${owner} TO ${coordinator} WITH INHERIT TRUE, SET TRUE;
+SET LOCAL ROLE ${owner};
+DROP SCHEMA ${schema} CASCADE;
+RESET ROLE;
+REVOKE ${owner} FROM ${coordinator} GRANTED BY ${coordinator} RESTRICT;
+REVOKE ${reader} FROM ${coordinator} GRANTED BY ${coordinator} RESTRICT;
+DROP ROLE ${reader};
+DROP ROLE ${owner};
+COMMIT;`;
+}
