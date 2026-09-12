@@ -36,11 +36,21 @@ const info = await res.json();
 // inside Render, so it must be the external URL here (same reachability
 // path the workflow's own REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL and
 // "Temporarily open Render DB access" step already rely on).
-const ownerUrl = info.externalConnectionString || info.internalConnectionString;
-if (!ownerUrl) {
+const rawOwnerUrl =
+  info.externalConnectionString || info.internalConnectionString;
+if (!rawOwnerUrl) {
   console.log("connection_info_missing_url");
   process.exit(1);
 }
+
+// Render's connection-info API returns a bare URL with no sslmode, but
+// Render requires SSL on the external endpoint (SQLSTATE 28000 otherwise).
+// The pre-existing REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL secret works
+// because it already carries sslmode=require; match that convention here.
+const ownerUrlObject = new URL(rawOwnerUrl);
+if (!ownerUrlObject.searchParams.has("sslmode"))
+  ownerUrlObject.searchParams.set("sslmode", "require");
+const ownerUrl = ownerUrlObject.toString();
 
 const client = new pg.Client({ connectionString: ownerUrl });
 try {
