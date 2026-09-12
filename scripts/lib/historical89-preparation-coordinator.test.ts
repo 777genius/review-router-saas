@@ -279,7 +279,6 @@ describe("trusted reader credential channel", () => {
   it("keeps provisioning after SET LOCAL logging redaction is refused", async () => {
     const secret = "synthetic-reader-secret";
     const query = vi.fn(async (sql: any) => {
-      const text = typeof sql === "string" ? sql : sql.text;
       if (typeof sql === "string" && sql.startsWith("SET LOCAL log_parameter"))
         throw Object.assign(new Error("permission denied to set parameter"), {
           code: "42501",

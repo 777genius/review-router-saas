@@ -1047,10 +1047,12 @@ function comparePreparationObservations(bundle, observation) {
           // Render PG17 reports backend_type as null for ordinary client
           // sessions. Autovacuum and other internals are superuser-typed and
           // appear after DDL such as DROP SCHEMA CASCADE; they are not client
-          // sessions and cannot be excluded by CONNECT. Inspect client
-          // backends only; still refuse every superuser client session.
-          backend.backendType === "client backend" ||
-          backend.backendType == null,
+          // sessions and cannot be excluded by CONNECT. Superuser processes
+          // (such as autovacuum workers) run under the postgres role and are
+          // not client backends. Inspect nonsuperuser client backends only.
+          backend.superuser === false &&
+          (backend.backendType === "client backend" ||
+            backend.backendType == null),
       )
       .some((backend) => !name(backend.role) || backend.superuser !== false) ||
     !Array.isArray(connect.connectCapableRoles) ||

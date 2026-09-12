@@ -847,13 +847,13 @@ describe("operation observation bindings", () => {
         ),
       ).toThrow();
     }
-    const unsafeBackend = structuredClone(observation);
-    unsafeBackend.connectAcl.backends.push({
-      role: "postgres",
-      superuser: true,
+    const unnamedClient = structuredClone(observation);
+    unnamedClient.connectAcl.backends.push({
+      role: "",
+      superuser: false,
       backendType: "client backend",
     } as never);
-    expect(() => compareHistorical89Original(bundle, unsafeBackend)).toThrow(
+    expect(() => compareHistorical89Original(bundle, unnamedClient)).toThrow(
       "review_original_live_admission",
     );
     const renderNullBackend = structuredClone(observation);
@@ -873,6 +873,30 @@ describe("operation observation bindings", () => {
     } as never);
     expect(() =>
       compareHistorical89Original(bundle, autovacuumBackend),
+    ).not.toThrow();
+    // Render PG17 hides backend_type for other users. The projection then
+    // reports autovacuum as a postgres superuser client backend. That is not
+    // a live application session and cannot be excluded by CONNECT.
+    const hiddenSuperuserBackend = structuredClone(observation);
+    hiddenSuperuserBackend.connectAcl.backends.push({
+      role: "postgres",
+      superuser: true,
+      backendType: "client backend",
+    } as never);
+    expect(() =>
+      compareHistorical89Original(bundle, hiddenSuperuserBackend),
+    ).not.toThrow();
+    expect(() =>
+      compareHistorical89PreparationStage(
+        bundle,
+        "finalized",
+        {
+          ...hiddenSuperuserBackend,
+          preparation: staged.preparation,
+        },
+        identity,
+        supplied.admission,
+      ),
     ).not.toThrow();
     const drift = structuredClone(observation);
     drift.catalog.facts.push({
