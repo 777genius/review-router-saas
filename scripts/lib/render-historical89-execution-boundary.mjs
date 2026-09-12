@@ -101,7 +101,7 @@ SELECT jsonb_build_object(
     WHERE r.rolcanlogin AND NOT r.rolsuper
       AND pg_catalog.has_database_privilege(r.oid,current_database(),'CONNECT')),'[]'::jsonb),
   'backends',COALESCE((SELECT jsonb_agg(jsonb_build_object(
-      'role',r.rolname,'superuser',r.rolsuper,'backendType',a.backend_type
+      'role',r.rolname,'superuser',r.rolsuper,'backendType',COALESCE(a.backend_type,'client backend')
     ) ORDER BY r.rolname COLLATE "C",a.pid)
     FROM pg_catalog.pg_stat_activity a
     JOIN pg_catalog.pg_roles r ON r.oid=a.usesysid

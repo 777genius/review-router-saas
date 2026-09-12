@@ -1037,7 +1037,12 @@ function comparePreparationObservations(bundle, observation) {
       (backend) =>
         !name(backend.role) ||
         backend.superuser !== false ||
-        backend.backendType !== "client backend",
+        // Render PG17 reports backend_type as null for ordinary client
+        // sessions (captured 2026-09-10 against this same database). Treat
+        // that as a client backend; still refuse any other typed backend
+        // and every superuser session.
+        (backend.backendType !== "client backend" &&
+          backend.backendType != null),
     ) ||
     !Array.isArray(connect.connectCapableRoles) ||
     connect.connectCapableRoles.some(

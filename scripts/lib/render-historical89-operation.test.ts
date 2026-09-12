@@ -856,6 +856,15 @@ describe("operation observation bindings", () => {
     expect(() => compareHistorical89Original(bundle, unsafeBackend)).toThrow(
       "review_original_live_admission",
     );
+    const renderNullBackend = structuredClone(observation);
+    renderNullBackend.connectAcl.backends.push({
+      role: "reviewrouter_worker",
+      superuser: false,
+      backendType: null,
+    } as never);
+    expect(() =>
+      compareHistorical89Original(bundle, renderNullBackend),
+    ).not.toThrow();
     const drift = structuredClone(observation);
     drift.catalog.facts.push({
       family: "authority",
