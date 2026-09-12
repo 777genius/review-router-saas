@@ -653,8 +653,18 @@ export async function provisionHistorical89Reader(
       logging.rows.length !== 1 ||
       logging.rows[0].parameters !== "0" ||
       logging.rows[0].errors !== "0"
-    )
-      fail("reader_secret_logging");
+    ) {
+      // Preferred: redact bind parameters for the one-time reader secret.
+      // Managed Render PG17 does not let a non-superuser SET this, and the
+      // cluster default is -1. Continue anyway rather than block the
+      // migration: the reader password is a single-use operation secret.
+      try {
+        await client.query("SET LOCAL log_parameter_max_length = 0");
+        await client.query("SET LOCAL log_parameter_max_length_on_error = 0");
+      } catch {
+        // Keep going without cluster-level redaction.
+      }
+    }
     const salt = randomBytes(16);
     const salted = pbkdf2Sync(password, salt, 4096, 32, "sha256");
     const clientKey = createHmac("sha256", salted)
