@@ -701,7 +701,7 @@ const reviewedHistorical89Contracts = Object.freeze({
   "managed-historical89-in-place/v1": {
     "path": "./render-historical89-reviewed-bundle.json",
     "digest":
-      "sha256:ef6856f0aa92396e812fe20f6c5225c5b8081747358c52cd72ec96db3a40291e",
+      "sha256:39bb71316a212ebb916622b59c176075d696c259b25bdf2c4a7f1d5182b80db4",
   },
 });
 
