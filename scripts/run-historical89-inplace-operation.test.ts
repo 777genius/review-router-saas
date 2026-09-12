@@ -519,6 +519,21 @@ function setup() {
             if (flags.materializeDefaultRestore) acl.raw = "{=c/reviewrouter}";
             return { rows: [] };
           }
+          if (
+            typeof sql === "string" &&
+            sql.includes("CONNECT ON DATABASE") &&
+            sql.includes("reviewrouter_operation_custody_reader")
+          ) {
+            events.push(
+              sql.startsWith("GRANT")
+                ? "reader-connect-grant"
+                : "reader-connect-revoke",
+            );
+            return {
+              command: sql.startsWith("GRANT") ? "GRANT" : "REVOKE",
+              rows: [],
+            };
+          }
           throw new Error(`unhandled fixture SQL: ${sql.slice(0, 100)}`);
         },
       };
