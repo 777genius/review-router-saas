@@ -84,6 +84,7 @@ const nonce = () => randomUUID().replaceAll("-", "");
 const gateSql = `SET search_path = pg_catalog, public;\n${renderManagedRuntimeGateSql};`;
 const same = (a, b) => digest(a) === digest(b);
 const readerRole = "reviewrouter_operation_custody_reader";
+const coordinatorRole = "reviewrouter";
 const connectGrantees = (observation) =>
   new Set(
     (observation?.entries ?? [])
@@ -780,6 +781,17 @@ export async function runHistorical89Operation({
         transitionKey,
         { sql: restrictionSql, original: original.connectAcl },
         async () => {
+          for (let poll = 0; poll < 30; poll++) {
+            const currentAcl = await readJson(
+              client,
+              renderHistorical89ConnectAclSql,
+            );
+            const clientBackends = (currentAcl.backends ?? []).filter(
+              (b) => !b.superuser && b.role !== coordinatorRole,
+            );
+            if (clientBackends.length === 0) break;
+            if (poll < 29) await delay(250);
+          }
           const actual = await readJson(
             client,
             renderHistorical89ConnectAclSql,
@@ -1255,9 +1267,11 @@ export async function runHistorical89Cli() {
     let message =
       /^(?:historical89_coordinator|historical89_capture|render_historical89_admission_rejected|render_historical89_operation_rejected|render_historical89_boundary_rejected|render_managed_cutover_rejected|render_managed_catalog_rejected|render_schema_handoff_rejected):[a-zA-Z0-9_:.-]+$/u.test(
         raw,
-      ) || /^(?:historical89_[a-z0-9_]+)$/u.test(raw)
+      )
         ? raw
-        : "operation_unresolved";
+        : /^(?:historical89_[a-z0-9_]+)$/u.test(raw)
+          ? `historical89_coordinator:${raw}`
+          : "operation_unresolved";
     // Never the raw message (may embed connection details or query text).
     // A Postgres SQLSTATE code and the thrown error's constructor name are
     // both short, well-known, non-sensitive classifiers safe to surface.
