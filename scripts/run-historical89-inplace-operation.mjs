@@ -1173,7 +1173,7 @@ export async function runHistorical89Cli() {
   } catch (error) {
     const raw = String(error?.message ?? "");
     let message =
-      /^(?:historical89_coordinator|render_historical89_admission_rejected):[a-zA-Z0-9_:.-]+$/u.test(
+      /^(?:historical89_coordinator|historical89_capture|render_historical89_admission_rejected|render_historical89_operation_rejected|render_historical89_boundary_rejected|render_managed_cutover_rejected|render_managed_catalog_rejected|render_schema_handoff_rejected):[a-zA-Z0-9_:.-]+$/u.test(
         raw,
       )
         ? raw
