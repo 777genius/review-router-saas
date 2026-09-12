@@ -560,6 +560,21 @@ function setup() {
               rows: [],
             };
           }
+          if (
+            typeof sql === "string" &&
+            sql.includes("reviewrouter_release_schema_owner") &&
+            sql.includes("reviewrouter")
+          ) {
+            events.push(
+              sql.startsWith("GRANT")
+                ? "schema-owner-temporary-grant"
+                : "schema-owner-temporary-revoke",
+            );
+            return {
+              command: sql.startsWith("GRANT") ? "GRANT" : "REVOKE",
+              rows: [],
+            };
+          }
           throw new Error(`unhandled fixture SQL: ${sql.slice(0, 100)}`);
         },
       };
