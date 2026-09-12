@@ -28,6 +28,14 @@ const phase = renderHistorical89AdmissionPhase;
 const fail = (reason) => {
   throw new Error(`render_historical89_admission_rejected:${reason}`);
 };
+const reraiseAdmission = (error, reason) => {
+  if (
+    error instanceof Error &&
+    error.message.startsWith("render_historical89_admission_rejected:")
+  )
+    throw error;
+  fail(reason);
+};
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const digest = (value) => /^sha256:[a-f0-9]{64}$/u.test(value);
 const uuid = (value) =>
@@ -1054,19 +1062,36 @@ function comparePreparationObservations(bundle, observation) {
     )
   )
     fail("review_original_live_admission");
-  const history = inspectRenderManagedLedgerRows(
-    readRenderHistorical96CheckoutInventory(),
-    observation.ledger,
-    phase,
-  );
+  let history;
+  try {
+    history = inspectRenderManagedLedgerRows(
+      readRenderHistorical96CheckoutInventory(),
+      observation.ledger,
+      phase,
+    );
+  } catch (error) {
+    reraiseAdmission(error, "review_original_ledger");
+  }
   if (
     history.count !== phase.baselineCount ||
     history.ledgerDigest !== migration.identity.originalLedgerDigest
   )
     fail("review_original_ledger");
-  assertRenderManagedClosedGate(observation.gate);
+  try {
+    assertRenderManagedClosedGate(observation.gate);
+  } catch (error) {
+    reraiseAdmission(error, "closed_gate_required");
+  }
   const creators = assertHistorical89Creators(observation.creatorEvidence);
   assertHistorical89ProviderDefaultAcl(observation.defaultAcl, creators);
+  let originalConnectAcl;
+  try {
+    originalConnectAcl = historical89OriginalDatabaseAcl(
+      observation.connectAcl,
+    );
+  } catch (error) {
+    reraiseAdmission(error, "review_original_connect");
+  }
   for (const [value, expected, label] of [
     [observation.defaultAcl, migration.identity.aclDigest, "acl"],
     [
@@ -1080,7 +1105,7 @@ function comparePreparationObservations(bundle, observation) {
       "creators",
     ],
     [
-      historical89OriginalDatabaseAcl(observation.connectAcl),
+      originalConnectAcl,
       renderManagedEvidenceDigest(bundle.preparation.originalDatabaseAcl),
       "connect",
     ],
@@ -1098,10 +1123,14 @@ function comparePreparationObservations(bundle, observation) {
 export function compareHistorical89Original(bundle, observation) {
   assertReviewedHistorical89Bundle(bundle);
   comparePreparationObservations(bundle, observation);
-  assertRenderManagedCatalogMatches(
-    observation.catalog,
-    bundle.preparation.originalCatalogDigest,
-  );
+  try {
+    assertRenderManagedCatalogMatches(
+      observation.catalog,
+      bundle.preparation.originalCatalogDigest,
+    );
+  } catch (error) {
+    reraiseAdmission(error, "review_original_catalog");
+  }
   if (observation.catalog.database !== bundle.migration.identity.databaseName)
     fail("review_original_database");
 }
@@ -1127,12 +1156,16 @@ export function compareHistorical89PreparationStage(
     )
   )
     fail("review_preparation_binding");
-  assertRenderManagedCatalogMatches(
-    stage === "prepared"
-      ? observation.catalog
-      : historical89StableReviewedCatalog(observation.catalog, binding),
-    bundle.preparation[`${stage}CatalogDigest`],
-  );
+  try {
+    assertRenderManagedCatalogMatches(
+      stage === "prepared"
+        ? observation.catalog
+        : historical89StableReviewedCatalog(observation.catalog, binding),
+      bundle.preparation[`${stage}CatalogDigest`],
+    );
+  } catch (error) {
+    reraiseAdmission(error, "review_preparation_catalog");
+  }
   const stored = observation.preparation;
   const acl = observation.connectAcl;
   if (

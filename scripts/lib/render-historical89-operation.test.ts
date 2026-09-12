@@ -870,12 +870,24 @@ describe("operation observation bindings", () => {
       family: "authority",
       fact: { unrelatedGrant: true },
     } as never);
-    expect(() => compareHistorical89Original(bundle, drift)).toThrow();
+    expect(() => compareHistorical89Original(bundle, drift)).toThrow(
+      "render_historical89_admission_rejected:review_original_catalog",
+    );
     const aclDrift = structuredClone(observation);
     aclDrift.connectAcl.entries[0].grantorOid = "999999";
     expect(() => compareHistorical89Original(bundle, aclDrift)).toThrow(
       "review_original_connect",
     );
+    const openGate = structuredClone(observation);
+    openGate.gate = { ...openGate.gate, gateStatus: "open" };
+    expect(() => compareHistorical89Original(bundle, openGate)).toThrow(
+      "render_historical89_admission_rejected:closed_gate_required",
+    );
+    const malformedLedger = structuredClone(observation);
+    malformedLedger.ledger = [{ migrationName: "not-a-ledger-row" }];
+    expect(() =>
+      compareHistorical89Original(bundle, malformedLedger),
+    ).toThrow("render_historical89_admission_rejected:review_original_ledger");
   });
 
   it("compares a complete synthetic contract without granting source qualification", () => {
