@@ -693,7 +693,7 @@ const reviewedHistorical89Contracts = Object.freeze({
   "managed-historical89-in-place/v1": {
     "path": "./render-historical89-reviewed-bundle.json",
     "digest":
-      "sha256:0fcc3faa7c786fad1f602cad441fc1c09ff81b79c982d384898e911d586248a7",
+      "sha256:79b42d2624f2481d4de8bb7931a5bd3ac9663a726aa52e2880c72766d8e76c0c",
   },
 });
 
@@ -1037,7 +1037,12 @@ function comparePreparationObservations(bundle, observation) {
       (backend) =>
         !name(backend.role) ||
         backend.superuser !== false ||
-        backend.backendType !== "client backend",
+        // Render PG17 reports backend_type as null for ordinary client
+        // sessions (captured 2026-09-10 against this same database). Treat
+        // that as a client backend; still refuse any other typed backend
+        // and every superuser session.
+        (backend.backendType !== "client backend" &&
+          backend.backendType != null),
     ) ||
     !Array.isArray(connect.connectCapableRoles) ||
     connect.connectCapableRoles.some(
