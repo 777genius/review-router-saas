@@ -275,6 +275,36 @@ describe("trusted reader credential channel", () => {
       ).toBe(true);
     },
   );
+
+  it("keeps provisioning after SET LOCAL logging redaction is refused", async () => {
+    const secret = "synthetic-reader-secret";
+    const query = vi.fn(async (sql: any) => {
+      const text = typeof sql === "string" ? sql : sql.text;
+      if (typeof sql === "string" && sql.startsWith("SET LOCAL log_parameter"))
+        throw Object.assign(new Error("permission denied to set parameter"), {
+          code: "42501",
+        });
+      if (typeof sql === "string" && sql.includes("AS parameters"))
+        return { rows: [{ parameters: "-1", errors: "-1" }] };
+      if (sql === "COMMIT;") return { command: "COMMIT", rows: [] };
+      if (typeof sql !== "string") return { rows: [] };
+      return json({ prepared: true });
+    });
+    await expect(
+      provisionHistorical89Reader({ query }, identity, undefined, secret),
+    ).resolves.toBeUndefined();
+    const statements = query.mock.calls.map(([sql]) =>
+      typeof sql === "string" ? sql : sql.text,
+    );
+    expect(statements).toContain(
+      "ROLLBACK TO SAVEPOINT historical89_logging_redaction",
+    );
+    expect(statements.some((sql) => sql.startsWith("DO $credential$"))).toBe(
+      true,
+    );
+    expect(statements).toContain("COMMIT;");
+    expect(JSON.stringify(statements)).not.toContain(secret);
+  });
 });
 
 describe("native executing source closure", () => {

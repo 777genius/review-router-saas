@@ -656,13 +656,18 @@ export async function provisionHistorical89Reader(
     ) {
       // Preferred: redact bind parameters for the one-time reader secret.
       // Managed Render PG17 does not let a non-superuser SET this, and the
-      // cluster default is -1. Continue anyway rather than block the
-      // migration: the reader password is a single-use operation secret.
+      // cluster default is -1. A failed SET LOCAL aborts the open transaction
+      // started by the preparation read; isolate it with a savepoint so ALTER
+      // ROLE still runs.
+      await client.query("SAVEPOINT historical89_logging_redaction");
       try {
         await client.query("SET LOCAL log_parameter_max_length = 0");
         await client.query("SET LOCAL log_parameter_max_length_on_error = 0");
+        await client.query("RELEASE SAVEPOINT historical89_logging_redaction");
       } catch {
-        // Keep going without cluster-level redaction.
+        await client.query(
+          "ROLLBACK TO SAVEPOINT historical89_logging_redaction",
+        );
       }
     }
     const salt = randomBytes(16);
@@ -686,8 +691,13 @@ export async function provisionHistorical89Reader(
     EXCEPTION WHEN query_canceled OR OTHERS THEN RAISE EXCEPTION 'reader_credential_failed';
     END $credential$;`);
     await client.query("COMMIT;");
-  } catch {
+  } catch (error) {
     await client.query("ROLLBACK;").catch(() => {});
+    if (
+      error instanceof Error &&
+      /^historical89_coordinator:/u.test(error.message)
+    )
+      throw error;
     fail("reader_credential_provisioning_failed");
   }
 }
