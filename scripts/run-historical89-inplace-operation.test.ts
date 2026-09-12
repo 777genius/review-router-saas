@@ -214,6 +214,7 @@ function setup() {
     failBackup: false,
     failResumeId: "",
     backendsDrift: false,
+    drainBackendsLingering: 0,
   };
   let connectAclCalls = 0;
   let row: any;
@@ -321,15 +322,26 @@ function setup() {
             return json({
               ...acl,
               backends:
-                flags.backendsDrift && connectAclCalls >= 3
-                  ? [
+                flags.drainBackendsLingering > 0
+                  ? (flags.drainBackendsLingering--,
+                    [
                       {
                         role: "reviewrouter_worker",
                         superuser: false,
                         backendType: "client backend",
                       },
-                    ]
-                  : acl.backends,
+                    ])
+                  : flags.backendsDrift &&
+                    connectAclCalls >= 3 &&
+                    suspended.size < fleet.length
+                    ? [
+                        {
+                          role: "reviewrouter_worker",
+                          superuser: false,
+                          backendType: "client backend",
+                        },
+                      ]
+                    : acl.backends,
               ...(restricted
                 ? {
                     raw: "{reviewrouter_operation_custody_reader=c/reviewrouter}",
@@ -1098,5 +1110,13 @@ describe("historical89 callable preparation orchestration", () => {
     await expect(test.run()).resolves.toMatchObject({
       outcome: "committed-96",
     });
+  });
+  it("polls until lingering client backends drain before admitting restricted state", async () => {
+    const test = setup();
+    test.flags.drainBackendsLingering = 2;
+    await expect(test.run()).resolves.toMatchObject({
+      outcome: "committed-96",
+    });
+    expect(test.flags.drainBackendsLingering).toBe(0);
   });
 });
