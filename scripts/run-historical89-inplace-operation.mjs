@@ -105,6 +105,15 @@ const reviewedOriginalConnectAcl = (bundle, live) => ({
   backends: live?.backends ?? [],
   connectCapableRoles: live?.connectCapableRoles ?? [],
 });
+const baselineReferenceOf = (observation) =>
+  digest(
+    observation?.connectAcl?.backends !== undefined
+      ? {
+          ...observation,
+          connectAcl: { ...observation.connectAcl, backends: [] },
+        }
+      : observation,
+  );
 async function connect(connectionString) {
   const client = new pg.Client({ connectionString });
   await client.connect();
@@ -335,7 +344,7 @@ export async function runHistorical89Operation({
         sourceCommit: request.sourceCommit,
         artifactReference: artifactDigest,
         approvalReference,
-        baselineReference: digest(original),
+        baselineReference: baselineReferenceOf(original),
         fleetReference: digest(fleet),
         serviceIds: fleet.map((s) => s.serviceId),
       }));
@@ -516,7 +525,7 @@ export async function runHistorical89Operation({
               if (presence.roles !== 0) fail("preparation_roles_present");
               const actual = await observe(client, bundle);
               compareHistorical89Original(bundle, actual);
-              if (digest(actual) !== identity.baselineReference)
+              if (baselineReferenceOf(actual) !== identity.baselineReference)
                 fail("original_changed");
               journal.put("original", actual);
               original = actual;
@@ -550,7 +559,7 @@ export async function runHistorical89Operation({
       "prepared",
     );
     original = journal.get("original");
-    if (!original || digest(original) !== identity.baselineReference)
+    if (!original || baselineReferenceOf(original) !== identity.baselineReference)
       fail("original_reference");
     const finalizedHint = await readJson(
       client,
