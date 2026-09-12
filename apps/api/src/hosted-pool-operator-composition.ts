@@ -80,9 +80,12 @@ export function createHostedPoolOperatorComposition(input: {
       fingerprintPepper.toString("base64") !== encoded
     )
       throw new Error("hosted_pool_custody_configuration_invalid");
+    // API production readiness requires KMS_ROLE=relay. The keyring purpose
+    // must match that role or import/replace fail closed with
+    // hosted_codex_kms_role_mismatch. Enrollment stays on the web runtime.
     const keyring = resolveHostedCodexKeyring({
       env: input.env,
-      purpose: "enrollment",
+      purpose: "relay",
     });
     const vault = new CredentialEnvelopeVault(keyring, "relay");
     return {
