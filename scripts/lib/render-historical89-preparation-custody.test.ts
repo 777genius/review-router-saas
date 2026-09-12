@@ -8,6 +8,8 @@ import {
   renderHistorical89PreparationService,
   renderHistorical89PreparationObserve,
   renderHistorical89PreparationFinalize,
+  renderHistorical89PreparationPresenceSql,
+  renderHistorical89PreparationUndoAbandonedSql,
 } from "./render-historical89-preparation-custody.mjs";
 import {
   renderManagedOperationCustodyFinalObjectsSql,
@@ -167,5 +169,22 @@ describe("historical89 staged preparation renderers", () => {
     expect(renderHistorical89PreparationReadSql(identity, binding)).toContain(
       "custody_attestation_failed",
     );
+  });
+
+  it("undoes unfinalized prepare without touching a permit-bearing schema", () => {
+    const sql = renderHistorical89PreparationUndoAbandonedSql();
+    expect(renderHistorical89PreparationPresenceSql).toContain(
+      "operation_permit",
+    );
+    expect(sql).toContain("pg_advisory_xact_lock(1783285769,89)");
+    expect(sql).toContain("preparation_undo_identity");
+    expect(sql).toContain("preparation_undo_ledger");
+    expect(sql).toContain("preparation_undo_finalized");
+    expect(sql).toContain("DROP SCHEMA release_operation_custody CASCADE");
+    expect(sql).toContain("DROP ROLE reviewrouter_operation_custody_reader");
+    expect(sql).toContain("DROP ROLE reviewrouter_operation_custody_owner");
+    expect(sql).toContain("IS DISTINCT FROM 89");
+    expect(sql).toContain("operation_permit");
+    expect(sql).not.toContain("DROP SCHEMA public");
   });
 });
