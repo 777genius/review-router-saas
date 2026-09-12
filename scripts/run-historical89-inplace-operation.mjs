@@ -44,6 +44,7 @@ import {
 import {
   renderHistorical89AdmissionRestrictionSql,
   renderHistorical89AdmissionRestoreSql,
+  renderHistorical89BackupQuiescenceGuardSql,
   renderHistorical89ConnectAclSql,
   renderHistorical89SessionDrainSql,
   renderHistorical89FleetQuiescenceGuardSql,
@@ -719,14 +720,14 @@ export async function runHistorical89Operation({
         if (clientBackends.length === 0) break;
         if (poll < 29) await delay(1000);
       }
-      await client.query(renderHistorical89FleetQuiescenceGuardSql);
+      await client.query(renderHistorical89BackupQuiescenceGuardSql);
       await client.query(renderManagedTemporaryMembershipSql);
       try {
         recovery = await captureBackup(identity);
       } finally {
         await client.query(renderManagedMembershipCleanupSql);
       }
-      await client.query(renderHistorical89FleetQuiescenceGuardSql);
+      await client.query(renderHistorical89BackupQuiescenceGuardSql);
       if (
         recovery?.format !== "postgresql-custom-gpg" ||
         !/^sha256:[a-f0-9]{64}$/u.test(recovery?.sha256 ?? "") ||
