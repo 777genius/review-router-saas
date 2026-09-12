@@ -537,17 +537,31 @@ DO $undo_identity$ BEGIN
   IF to_regclass('${schema}.operation_permit') IS NOT NULL THEN
     RAISE EXCEPTION 'preparation_undo_finalized'; END IF;
   IF to_regnamespace('${schema}') IS NULL
-    OR to_regrole('${owner}') IS NULL
-    OR to_regrole('${reader}') IS NULL THEN
+    AND to_regrole('${owner}') IS NULL
+    AND to_regrole('${reader}') IS NULL THEN
     RAISE EXCEPTION 'preparation_undo_incomplete'; END IF;
 END $undo_identity$;
 GRANT ${owner} TO ${coordinator} WITH INHERIT TRUE, SET TRUE;
 SET LOCAL ROLE ${owner};
 DROP SCHEMA ${schema} CASCADE;
 RESET ROLE;
-REVOKE ${owner} FROM ${coordinator} GRANTED BY ${coordinator} RESTRICT;
-REVOKE ${reader} FROM ${coordinator} GRANTED BY ${coordinator} RESTRICT;
-DROP ROLE ${reader};
-DROP ROLE ${owner};
+DO $cleanup_roles$ BEGIN
+  EXECUTE format('REVOKE ALL ON DATABASE %I FROM %I', current_database(), '${reader}');
+  EXECUTE format('REVOKE ALL ON DATABASE %I FROM %I', current_database(), '${owner}');
+  IF to_regrole('${owner}') IS NOT NULL THEN
+    BEGIN
+      EXECUTE 'REVOKE ${owner} FROM ${coordinator} GRANTED BY ${coordinator} RESTRICT';
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END;
+    EXECUTE 'DROP ROLE ${owner}';
+  END IF;
+  IF to_regrole('${reader}') IS NOT NULL THEN
+    BEGIN
+      EXECUTE 'REVOKE ${reader} FROM ${coordinator} GRANTED BY ${coordinator} RESTRICT';
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END;
+    EXECUTE 'DROP ROLE ${reader}';
+  END IF;
+END $cleanup_roles$;
 COMMIT;`;
 }

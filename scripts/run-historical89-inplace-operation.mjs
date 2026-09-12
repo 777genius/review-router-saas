@@ -96,8 +96,8 @@ const leftoverRestriction = (live, reviewed) => {
     (entry) => entry.grantee,
   );
   return (
-    liveConnect.has(readerRole) &&
-    withdraw.every((grantee) => !liveConnect.has(grantee))
+    liveConnect.has(readerRole) ||
+    withdraw.some((grantee) => !liveConnect.has(grantee))
   );
 };
 const reviewedOriginalConnectAcl = (bundle, live) => ({
@@ -261,28 +261,12 @@ export async function runHistorical89Operation({
         renderHistorical89PreparationPresenceSql,
       );
       if (abandoned.permit) fail("abandoned_preparation_finalized");
-      if (abandoned.present) {
-        // 10th production dispatch committed prepare, then died before a
-        // resumable identity on this executable. A new journal cannot adopt
-        // that catalog as original. Remove only this unfinalized staging.
-        await client.query(renderHistorical89PreparationUndoAbandonedSql());
-        const leftover = await readJson(
-          client,
-          renderHistorical89PreparationPresenceSql,
-        );
-        if (
-          leftover.present ||
-          leftover.permit ||
-          leftover.owner ||
-          leftover.reader
-        )
-          fail("abandoned_preparation_unremoved");
-      }
       const liveAcl = await readJson(client, renderHistorical89ConnectAclSql);
       const reviewed = bundle.preparation.originalDatabaseAcl;
       // A previous attempt may have committed restriction and then died
-      // before journal.complete. Undo only drops abandoned prepare; restore
-      // the reviewed original CONNECT policy so capture can match the bundle.
+      // before journal.complete. Restore the reviewed original CONNECT
+      // policy first so reader CONNECT is cleared and client roles can
+      // reconnect before dropping the unfinalized staging schema/roles.
       if (reviewed) {
         const reviewedAcl = reviewedOriginalConnectAcl(bundle, liveAcl);
         if (leftoverRestriction(liveAcl, reviewedAcl)) {
@@ -301,6 +285,23 @@ export async function runHistorical89Operation({
           )
             fail("abandoned_restriction_unrestored");
         }
+      }
+      if (abandoned.present || abandoned.owner || abandoned.reader) {
+        // 10th production dispatch committed prepare, then died before a
+        // resumable identity on this executable. A new journal cannot adopt
+        // that catalog as original. Remove only this unfinalized staging.
+        await client.query(renderHistorical89PreparationUndoAbandonedSql());
+        const leftover = await readJson(
+          client,
+          renderHistorical89PreparationPresenceSql,
+        );
+        if (
+          leftover.present ||
+          leftover.permit ||
+          leftover.owner ||
+          leftover.reader
+        )
+          fail("abandoned_preparation_unremoved");
       }
       const capture = await captureHistorical89Prerequisites({
         client,
