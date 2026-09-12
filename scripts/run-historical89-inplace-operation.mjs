@@ -117,13 +117,17 @@ async function observe(client, bundle) {
 }
 
 function checkService(expected, observed, requireSuspended = false) {
+  const details = observed.serviceDetails ?? {};
+  const nested = details.envSpecificDetails;
+  const preDeployCommand =
+    details.preDeployCommand ?? nested?.preDeployCommand ?? "";
   if (
     observed.id !== expected.serviceId ||
     observed.ownerId !== expected.ownerId ||
     observed.type !== expected.type ||
     observed.autoDeploy !== "no" ||
     !["not_suspended", "suspended"].includes(observed.suspended) ||
-    observed.serviceDetails?.preDeployCommand !== "" ||
+    preDeployCommand !== "" ||
     (requireSuspended && observed.suspended !== "suspended")
   )
     fail("fleet_observation");
