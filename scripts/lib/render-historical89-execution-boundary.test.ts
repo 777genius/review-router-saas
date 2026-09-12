@@ -5,6 +5,7 @@ import {
   renderHistorical89AdmissionRestoreSql,
   renderHistorical89AdmissionRestrictionSql,
   renderHistorical89AdmittedRoles,
+  renderHistorical89BackupQuiescenceGuardSql,
   renderHistorical89ConnectAclSql,
   renderHistorical89FleetQuiescenceGuardSql,
   renderHistorical89SessionDrainSql,
@@ -138,6 +139,21 @@ describe("historical89 execution boundary", () => {
       "historical89_privileged_backend_present",
     );
     expect(renderHistorical89FleetQuiescenceGuardSql).toContain(
+      "historical89_ledger_locked_elsewhere",
+    );
+  });
+
+  it("guards observers and privileged backends before admission restriction", () => {
+    expect(renderHistorical89BackupQuiescenceGuardSql).toContain(
+      "historical89_fleet_not_quiesced",
+    );
+    expect(renderHistorical89BackupQuiescenceGuardSql).not.toContain(
+      "historical89_admission_open",
+    );
+    expect(renderHistorical89BackupQuiescenceGuardSql).toContain(
+      "historical89_privileged_backend_present",
+    );
+    expect(renderHistorical89BackupQuiescenceGuardSql).toContain(
       "historical89_ledger_locked_elsewhere",
     );
   });

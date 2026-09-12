@@ -349,6 +349,38 @@ COMMIT;`;
 }
 
 /**
+ * Pre-admission backup guard. It verifies fleet quiescence, absence of
+ * privileged client backends and that the ledger is unlocked before taking the
+ * retained recovery backup, while admission remains in its original state for
+ * subsequent observation verification.
+ */
+export const renderHistorical89BackupQuiescenceGuardSql = `DO $fleet$ BEGIN
+  -- Every other nonsuperuser backend, not only writers: an observer holding an
+  -- open snapshot is enough to make this operation unsafe.
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_stat_activity a
+             JOIN pg_catalog.pg_roles r ON r.oid=a.usesysid
+             WHERE a.datname=pg_catalog.current_database()
+               AND a.pid<>pg_catalog.pg_backend_pid() AND NOT r.rolsuper) THEN
+    RAISE EXCEPTION 'historical89_fleet_not_quiesced';
+  END IF;
+  -- Withdrawing CONNECT cannot exclude a superuser. Detect and refuse instead
+  -- of claiming an exclusion a nonsuperuser owner cannot enforce.
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_stat_activity a
+             JOIN pg_catalog.pg_roles r ON r.oid=a.usesysid
+             WHERE a.datname=pg_catalog.current_database()
+               AND a.pid<>pg_catalog.pg_backend_pid() AND r.rolsuper
+               AND a.backend_type='client backend') THEN
+    RAISE EXCEPTION 'historical89_privileged_backend_present';
+  END IF;
+  -- No other backend, privileged or not, may hold a lock on the ledger.
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_locks l
+             WHERE l.relation='public._prisma_migrations'::regclass
+               AND l.pid<>pg_catalog.pg_backend_pid() AND l.granted) THEN
+    RAISE EXCEPTION 'historical89_ledger_locked_elsewhere';
+  END IF;
+END $fleet$;`;
+
+/**
  * In-transaction guard. It repeats the fleet requirement rather than trusting
  * the earlier drain: a reconnect between the drain and the transaction must
  * abort the operation, not be discovered afterwards.
