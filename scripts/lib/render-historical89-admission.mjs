@@ -701,7 +701,7 @@ const reviewedHistorical89Contracts = Object.freeze({
   "managed-historical89-in-place/v1": {
     "path": "./render-historical89-reviewed-bundle.json",
     "digest":
-      "sha256:ef6856f0aa92396e812fe20f6c5225c5b8081747358c52cd72ec96db3a40291e",
+      "sha256:39bb71316a212ebb916622b59c176075d696c259b25bdf2c4a7f1d5182b80db4",
   },
 });
 
@@ -1041,17 +1041,18 @@ function comparePreparationObservations(bundle, observation) {
   const connect = observation.connectAcl;
   if (
     !Array.isArray(connect?.backends) ||
-    connect.backends.some(
-      (backend) =>
-        !name(backend.role) ||
-        backend.superuser !== false ||
-        // Render PG17 reports backend_type as null for ordinary client
-        // sessions (captured 2026-09-10 against this same database). Treat
-        // that as a client backend; still refuse any other typed backend
-        // and every superuser session.
-        (backend.backendType !== "client backend" &&
-          backend.backendType != null),
-    ) ||
+    connect.backends
+      .filter(
+        (backend) =>
+          // Render PG17 reports backend_type as null for ordinary client
+          // sessions. Autovacuum and other internals are superuser-typed and
+          // appear after DDL such as DROP SCHEMA CASCADE; they are not client
+          // sessions and cannot be excluded by CONNECT. Inspect client
+          // backends only; still refuse every superuser client session.
+          backend.backendType === "client backend" ||
+          backend.backendType == null,
+      )
+      .some((backend) => !name(backend.role) || backend.superuser !== false) ||
     !Array.isArray(connect.connectCapableRoles) ||
     connect.connectCapableRoles.some(
       (role) =>

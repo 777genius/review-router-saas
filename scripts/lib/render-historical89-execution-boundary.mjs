@@ -105,7 +105,8 @@ SELECT jsonb_build_object(
     ) ORDER BY r.rolname COLLATE "C",a.pid)
     FROM pg_catalog.pg_stat_activity a
     JOIN pg_catalog.pg_roles r ON r.oid=a.usesysid
-    WHERE a.datname=current_database() AND a.pid<>pg_catalog.pg_backend_pid()),'[]'::jsonb)
+    WHERE a.datname=current_database() AND a.pid<>pg_catalog.pg_backend_pid()
+      AND (a.backend_type IS NULL OR a.backend_type = 'client backend')),'[]'::jsonb)
 )
 FROM pg_catalog.pg_database d
 LEFT JOIN pg_catalog.pg_roles owner ON owner.oid=d.datdba

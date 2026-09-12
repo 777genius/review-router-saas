@@ -142,6 +142,15 @@ describe("historical89 execution boundary", () => {
     );
   });
 
+  it("observes only client backends in the original CONNECT ACL", () => {
+    expect(renderHistorical89ConnectAclSql).toContain(
+      "a.backend_type IS NULL OR a.backend_type = 'client backend'",
+    );
+    expect(renderHistorical89ConnectAclSql).toContain(
+      "COALESCE(a.backend_type,'client backend')",
+    );
+  });
+
   it("requires qualified recovery, closed admission, disabled automation and a durable fence", () => {
     const preconditions = {
       recovery: {

@@ -865,6 +865,15 @@ describe("operation observation bindings", () => {
     expect(() =>
       compareHistorical89Original(bundle, renderNullBackend),
     ).not.toThrow();
+    const autovacuumBackend = structuredClone(observation);
+    autovacuumBackend.connectAcl.backends.push({
+      role: "postgres",
+      superuser: true,
+      backendType: "autovacuum worker",
+    } as never);
+    expect(() =>
+      compareHistorical89Original(bundle, autovacuumBackend),
+    ).not.toThrow();
     const drift = structuredClone(observation);
     drift.catalog.facts.push({
       family: "relation",
@@ -898,9 +907,9 @@ describe("operation observation bindings", () => {
     );
     const malformedLedger = structuredClone(observation);
     malformedLedger.ledger = [{ migrationName: "not-a-ledger-row" }];
-    expect(() =>
-      compareHistorical89Original(bundle, malformedLedger),
-    ).toThrow("render_historical89_admission_rejected:review_original_ledger");
+    expect(() => compareHistorical89Original(bundle, malformedLedger)).toThrow(
+      "render_historical89_admission_rejected:review_original_ledger",
+    );
   });
 
   it("compares a complete synthetic contract without granting source qualification", () => {
