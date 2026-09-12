@@ -19,6 +19,13 @@ export function resolveHostedCodexKeyring(input: {
 }): CredentialKeyringPort {
   const mode = input.env.REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE?.trim();
   if (input.env.NODE_ENV === "production") {
+    if (
+      input.env.REVIEW_ROUTER_HOSTED_CODEX_ALLOW_LOCAL_ENV_KEYRING?.trim() ===
+        "1" &&
+      mode === "local_env"
+    ) {
+      return input.externalKeyring ?? new EnvCredentialKeyring(input.env);
+    }
     if (mode !== "external_kms") {
       throw new Error("hosted_codex_external_kms_required");
     }

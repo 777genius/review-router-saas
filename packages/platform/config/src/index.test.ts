@@ -249,6 +249,30 @@ describe("platform config", () => {
           "operator-string",
       }),
     ).toThrow("hosted_codex_database_resource_identity_invalid");
+    const localEnv = {
+      ...base,
+      REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE: "local_env",
+      REVIEW_ROUTER_HOSTED_CODEX_ALLOW_LOCAL_ENV_KEYRING: "1",
+      REVIEW_ROUTER_HOSTED_CODEX_KEK_CURRENT_ID: "first-launch",
+      REVIEW_ROUTER_HOSTED_CODEX_KEK_KEYRING_JSON: JSON.stringify({
+        "first-launch": Buffer.alloc(32, 3).toString("base64"),
+      }),
+    };
+    expect(() =>
+      assertHostedCodexProductionReadiness(localEnv),
+    ).not.toThrow();
+    expect(() =>
+      assertHostedCodexProductionReadiness({
+        ...localEnv,
+        REVIEW_ROUTER_HOSTED_CODEX_ALLOW_LOCAL_ENV_KEYRING: "0",
+      }),
+    ).toThrow("hosted_codex_external_kms_required");
+    expect(() =>
+      assertHostedCodexProductionReadiness({
+        ...localEnv,
+        REVIEW_ROUTER_HOSTED_CODEX_KEK_CURRENT_ID: "missing",
+      }),
+    ).toThrow("hosted_codex_current_kek_missing");
   });
 
   it("trusts the rotating primary plus an explicit same-repository SHA overlap", () => {

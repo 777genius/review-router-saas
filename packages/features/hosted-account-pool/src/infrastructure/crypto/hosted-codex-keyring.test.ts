@@ -22,6 +22,22 @@ describe("hosted Codex production keyring", () => {
     ).toThrow("hosted_codex_aws_kms_key_id_missing");
   });
 
+  it("accepts an explicit first-launch local env keyring in production", () => {
+    const keyring = resolveHostedCodexKeyring({
+      env: {
+        NODE_ENV: "production",
+        REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE: "local_env",
+        REVIEW_ROUTER_HOSTED_CODEX_ALLOW_LOCAL_ENV_KEYRING: "1",
+        REVIEW_ROUTER_HOSTED_CODEX_KEK_CURRENT_ID: "first-launch",
+        REVIEW_ROUTER_HOSTED_CODEX_KEK_KEYRING_JSON: JSON.stringify({
+          "first-launch": Buffer.alloc(32, 9).toString("base64"),
+        }),
+      },
+    });
+    expect(keyring.custodyMode).toBe("local_env");
+    expect(keyring.currentKeyId).toBe("first-launch");
+  });
+
   it("accepts an injected external keyring in production", () => {
     const externalKeyring = {
       custodyMode: "aws_kms" as const,
