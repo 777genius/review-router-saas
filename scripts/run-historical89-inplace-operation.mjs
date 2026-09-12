@@ -104,6 +104,22 @@ const leftoverRestriction = (live, reviewed) => {
     withdraw.some((grantee) => !liveConnect.has(grantee))
   );
 };
+const custodyPermitAbsent = (error) =>
+  error?.code === "P0001" &&
+  String(error?.message ?? "").includes("custody_permit_absent");
+async function readCurrentPermit(client, binding) {
+  try {
+    return await readHistorical89One(
+      client,
+      renderManagedOperationCurrentPermitSql(binding),
+    );
+  } catch (error) {
+    // The reviewed catalog raises instead of returning NULL when no permit
+    // row exists yet. The first open must treat that as an absent permit.
+    if (custodyPermitAbsent(error)) return null;
+    throw error;
+  }
+}
 const reviewedOriginalConnectAcl = (bundle, live) => ({
   ...bundle.preparation.originalDatabaseAcl,
   backends: live?.backends ?? [],
@@ -564,7 +580,10 @@ export async function runHistorical89Operation({
       "prepared",
     );
     original = journal.get("original");
-    if (!original || baselineReferenceOf(original) !== identity.baselineReference)
+    if (
+      !original ||
+      baselineReferenceOf(original) !== identity.baselineReference
+    )
       fail("original_reference");
     const finalizedHint = await readJson(
       client,
@@ -981,10 +1000,7 @@ export async function runHistorical89Operation({
     };
     saveVerification(input.coordinates);
     await submit("permit", { sql: plan.openPermitSql }, async () => {
-      const current = await readHistorical89One(
-        client,
-        renderManagedOperationCurrentPermitSql(binding),
-      );
+      const current = await readCurrentPermit(client, binding);
       if (current === null) return readJson(client, plan.openPermitSql);
       if (!same(current, expectedPermit(plan))) fail("permit_request_conflict");
       return current;
@@ -1008,10 +1024,7 @@ export async function runHistorical89Operation({
         submitted.backend,
       );
       const actual = await observe(client, bundle);
-      const currentPermit = await readHistorical89One(
-        client,
-        renderManagedOperationCurrentPermitSql(binding),
-      );
+      const currentPermit = await readCurrentPermit(client, binding);
       let receipt;
       const reader = await openReader();
       try {
@@ -1088,20 +1101,14 @@ export async function runHistorical89Operation({
       // before the epoch effect; no new migration can outrun these bytes.
       saveVerification(nextCoordinates);
       await submit(`advance-${epoch}`, { advance, sql }, async () => {
-        const current = await readHistorical89One(
-          client,
-          renderManagedOperationCurrentPermitSql(binding),
-        );
+        const current = await readCurrentPermit(client, binding);
         if (same(current, expectedPermit(nextPlan))) return current;
         if (!same(current, expectedPermit(plan))) fail("epoch_permit_mismatch");
         return readJson(client, sql);
       });
       if (
         !same(
-          await readHistorical89One(
-            client,
-            renderManagedOperationCurrentPermitSql(binding),
-          ),
+          await readCurrentPermit(client, binding),
           expectedPermit(nextPlan),
         )
       )
@@ -1126,10 +1133,7 @@ export async function runHistorical89Operation({
               nonce: pendingAdvance.nextNonce,
             },
           });
-          const current = await readHistorical89One(
-            client,
-            renderManagedOperationCurrentPermitSql(binding),
-          );
+          const current = await readCurrentPermit(client, binding);
           if (same(current, expectedPermit(advancedPlan))) {
             if (!journal.get(`advance-${epoch}.request`))
               fail("epoch_request_missing");
@@ -1153,15 +1157,7 @@ export async function runHistorical89Operation({
         await advanceEpoch(epoch, advance);
         continue;
       }
-      if (
-        !same(
-          await readHistorical89One(
-            client,
-            renderManagedOperationCurrentPermitSql(binding),
-          ),
-          expectedPermit(plan),
-        )
-      )
+      if (!same(await readCurrentPermit(client, binding), expectedPermit(plan)))
         fail("permit_coordinates");
       await validateRetainedFence();
       await authenticateReader(openReader, client, identity, binding);
