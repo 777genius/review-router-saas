@@ -264,16 +264,15 @@ describe("trusted reader credential channel", () => {
       );
       expect(JSON.stringify(statements)).not.toContain(secret);
       expect(JSON.stringify(query.mock.calls)).not.toContain(secret);
-      if (failure === "logging")
-        expect(query.mock.calls.every(([sql]) => typeof sql === "string")).toBe(
-          true,
-        );
-      else
-        expect(
-          query.mock.calls.some(([sql]) =>
-            sql.values?.[0].startsWith("SCRAM-SHA-256$"),
-          ),
-        ).toBe(true);
+      expect(
+        query.mock.calls.some((call) => {
+          const sql = call[0];
+          return (
+            typeof sql !== "string" &&
+            sql.values?.[0].startsWith("SCRAM-SHA-256$")
+          );
+        }),
+      ).toBe(true);
     },
   );
 });
