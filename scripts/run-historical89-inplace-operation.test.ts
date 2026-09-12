@@ -213,7 +213,9 @@ function setup() {
     backupCount: 0,
     failBackup: false,
     failResumeId: "",
+    backendsDrift: false,
   };
+  let connectAclCalls = 0;
   let row: any;
   let permit: any = null;
   let restricted = false;
@@ -314,9 +316,20 @@ function setup() {
           )
             return json({ version: 1, rows: [] });
           if (sql === gateSql) return json({ gateStatus: "closed" });
-          if (sql === renderHistorical89ConnectAclSql)
+          if (sql === renderHistorical89ConnectAclSql) {
+            connectAclCalls++;
             return json({
               ...acl,
+              backends:
+                flags.backendsDrift && connectAclCalls >= 3
+                  ? [
+                      {
+                        role: "reviewrouter_worker",
+                        superuser: false,
+                        backendType: "client backend",
+                      },
+                    ]
+                  : acl.backends,
               ...(restricted
                 ? {
                     raw: "{reviewrouter_operation_custody_reader=c/reviewrouter}",
@@ -336,6 +349,7 @@ function setup() {
                 ? [{ role: "reviewrouter_operation_custody_reader" }]
                 : [],
             });
+          }
           const identity = journal.get("identity");
           if (
             identity &&
@@ -1078,4 +1092,11 @@ describe("historical89 callable preparation orchestration", () => {
       expect(test.journal.bytes(key)).toEqual(original);
     },
   );
+  it("tolerates ephemeral backend drift across preliminary capture and prepare checkpoint", async () => {
+    const test = setup();
+    test.flags.backendsDrift = true;
+    await expect(test.run()).resolves.toMatchObject({
+      outcome: "committed-96",
+    });
+  });
 });
