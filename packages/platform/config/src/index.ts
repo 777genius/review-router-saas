@@ -223,37 +223,41 @@ export function assertHostedCodexProductionReadiness(
   }
   resolveHostedPoolActionRelease(input);
   if (values[1] !== "1") return;
-  if (
-    input.REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE?.trim() !== "external_kms"
-  ) {
-    throw new Error("hosted_codex_external_kms_required");
-  }
-  const expectedKmsRole = role === "api" ? "relay" : "enrollment";
-  if (input.REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE?.trim() !== expectedKmsRole) {
-    throw new Error("hosted_codex_kms_role_mismatch");
-  }
-  const roleArn = input[hostedCodexRuntimeRoleArnName]?.trim() ?? "";
-  if (
-    !/^arn:(?:aws|aws-us-gov|aws-cn):iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]{1,512}$/u.test(
-      roleArn,
-    )
-  ) {
-    throw new Error("hosted_codex_aws_role_arn_invalid");
-  }
-  const keyArn = input.REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN?.trim() ?? "";
-  const keyArnMatch =
-    /^arn:(?:aws|aws-us-gov|aws-cn):kms:([a-z0-9-]+):\d{12}:key\/(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$/iu.exec(
-      keyArn,
-    );
-  if (!keyArnMatch) {
-    throw new Error("hosted_codex_aws_kms_key_id_invalid");
-  }
-  const region = input.AWS_REGION?.trim() ?? "";
-  if (!/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/u.test(region)) {
-    throw new Error("hosted_codex_aws_kms_region_invalid");
-  }
-  if (keyArnMatch[1]?.toLowerCase() !== region.toLowerCase()) {
-    throw new Error("hosted_codex_aws_kms_region_mismatch");
+  if (allowsProductionLocalEnvKeyring(input)) {
+    assertProductionLocalEnvKeyring(input);
+  } else {
+    if (
+      input.REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE?.trim() !== "external_kms"
+    ) {
+      throw new Error("hosted_codex_external_kms_required");
+    }
+    const expectedKmsRole = role === "api" ? "relay" : "enrollment";
+    if (input.REVIEW_ROUTER_HOSTED_CODEX_KMS_ROLE?.trim() !== expectedKmsRole) {
+      throw new Error("hosted_codex_kms_role_mismatch");
+    }
+    const roleArn = input[hostedCodexRuntimeRoleArnName]?.trim() ?? "";
+    if (
+      !/^arn:(?:aws|aws-us-gov|aws-cn):iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]{1,512}$/u.test(
+        roleArn,
+      )
+    ) {
+      throw new Error("hosted_codex_aws_role_arn_invalid");
+    }
+    const keyArn = input.REVIEW_ROUTER_HOSTED_CODEX_KMS_KEY_ARN?.trim() ?? "";
+    const keyArnMatch =
+      /^arn:(?:aws|aws-us-gov|aws-cn):kms:([a-z0-9-]+):\d{12}:key\/(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$/iu.exec(
+        keyArn,
+      );
+    if (!keyArnMatch) {
+      throw new Error("hosted_codex_aws_kms_key_id_invalid");
+    }
+    const region = input.AWS_REGION?.trim() ?? "";
+    if (!/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/u.test(region)) {
+      throw new Error("hosted_codex_aws_kms_region_invalid");
+    }
+    if (keyArnMatch[1]?.toLowerCase() !== region.toLowerCase()) {
+      throw new Error("hosted_codex_aws_kms_region_mismatch");
+    }
   }
   if (
     !/^render:postgres:dpg-[a-z0-9-]{8,}$/u.test(
@@ -278,6 +282,41 @@ export function assertHostedCodexProductionReadiness(
       input.REVIEW_ROUTER_HOSTED_CODEX_CAPABILITY_HMAC_KEY,
       "hosted_codex_capability_hmac_key_invalid",
     );
+  }
+}
+
+function allowsProductionLocalEnvKeyring(
+  input: ReviewRouterActionRefEnv,
+): boolean {
+  return (
+    input.REVIEW_ROUTER_HOSTED_CODEX_ALLOW_LOCAL_ENV_KEYRING?.trim() === "1" &&
+    input.REVIEW_ROUTER_HOSTED_CODEX_KEYRING_MODE?.trim() === "local_env"
+  );
+}
+
+function assertProductionLocalEnvKeyring(
+  input: ReviewRouterActionRefEnv,
+): void {
+  const currentKeyId =
+    input.REVIEW_ROUTER_HOSTED_CODEX_KEK_CURRENT_ID?.trim() ?? "";
+  const serialized =
+    input.REVIEW_ROUTER_HOSTED_CODEX_KEK_KEYRING_JSON?.trim() ?? "";
+  if (!currentKeyId || !serialized) {
+    throw new Error("hosted_codex_keyring_not_configured");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized);
+  } catch {
+    throw new Error("hosted_codex_keyring_invalid");
+  }
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    !Object.hasOwn(parsed, currentKeyId)
+  ) {
+    throw new Error("hosted_codex_current_kek_missing");
   }
 }
 
