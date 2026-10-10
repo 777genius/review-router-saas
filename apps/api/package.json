@@ -44,7 +44,9 @@
     "fastify": "^5.10.0",
     "zod": "^4.4.2",
     "@reviewrouter/platform-locks": "workspace:*",
-    "@reviewrouter/features-sdk-growth-authority": "workspace:*"
+    "@reviewrouter/features-sdk-growth-authority": "workspace:*",
+    "@reviewrouter/features-provider-accounts": "workspace:*",
+    "@agent-teams/account-gateway": "file:../../vendor/account-gateway/agent-teams-account-gateway-0.1.0-e8c9216.tgz"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",

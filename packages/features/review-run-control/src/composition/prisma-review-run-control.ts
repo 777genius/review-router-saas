@@ -5,7 +5,12 @@ import { PrismaReviewRunAuthorizationRepository } from "../infrastructure/prisma
 import { PrismaReviewSafetyControlRepository } from "../infrastructure/prisma/prisma-review-safety-control-repository";
 import { PrismaScmRepositoryIdentityRepository } from "../infrastructure/prisma/prisma-scm-repository-identity-repository";
 
-export function createPrismaReviewRunControlRepositories(prisma: PrismaClient) {
+export function createPrismaReviewRunControlRepositories(
+  prisma: PrismaClient,
+  runtimeSnapshotFence?: ConstructorParameters<
+    typeof PrismaReviewRunAuthorizationRepository
+  >[1],
+) {
   const producerReleases = new PrismaProducerReleaseRepository(prisma);
   const repositoryIdentities = new PrismaScmRepositoryIdentityRepository(
     prisma,
@@ -14,7 +19,10 @@ export function createPrismaReviewRunControlRepositories(prisma: PrismaClient) {
     prisma,
   );
   const safetyControls = new PrismaReviewSafetyControlRepository(prisma);
-  const authorizations = new PrismaReviewRunAuthorizationRepository(prisma);
+  const authorizations = new PrismaReviewRunAuthorizationRepository(
+    prisma,
+    runtimeSnapshotFence,
+  );
   return {
     producerReleases,
     repositoryIdentities,

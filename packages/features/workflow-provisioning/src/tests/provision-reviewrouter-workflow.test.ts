@@ -1,4 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
+import {
+  parseReviewConfigurationStrict,
+  safeDefaultReviewConfiguration,
+  type ReviewConfigurationRepositoryPort,
+} from "@reviewrouter/features-review-config";
+import type { ProvisionWorkflowInput } from "../domain/workflow-provisioning";
 import {
   allocateVersionedProviderSecretNamespace,
   CodexRotatingT0WorkflowSchemaVersion,
@@ -97,6 +104,166 @@ const activeTarget = {
   archived: false,
   installationStatus: "active",
 } satisfies WorkflowProvisioningTarget;
+
+const savedGatewayConfig = parseReviewConfigurationStrict({
+  ...safeDefaultReviewConfiguration,
+  schemaVersion: 2,
+  providers: [
+    {
+      kind: "codex",
+      authMode: "codex_account_gateway",
+      model: "gpt-6.1-sol",
+      reasoningEffort: "high",
+      fastMode: false,
+      gatewayBindingId: "binding-account-v",
+      gatewayProfileRef: "default",
+    },
+  ],
+});
+const gatewayInput: ProvisionWorkflowInput = {
+  ...activeTarget,
+  githubRepositoryId: "123456",
+  repositoryFullName: activeTarget.fullName,
+  actionRef: "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+  apiUrl: "https://app.reviewrouter.dev",
+  runtimeConfigMode: "oidc",
+  codexSessionMode: "account-gateway",
+};
+function savedConfigurations(
+  selection = "repository",
+): ReviewConfigurationRepositoryPort {
+  return {
+    findLatest: async (target) =>
+      target.scope === selection
+        ? { version: 1, config: savedGatewayConfig }
+        : null,
+    saveNextVersion: async () => {
+      throw new Error("unexpected_config_write");
+    },
+    deleteTarget: async () => {
+      throw new Error("unexpected_config_delete");
+    },
+  };
+}
+it("provisions only the keyless caller from server-loaded saved repository config", async () => {
+  const setupGateway = new CapturingSetupGateway();
+  await provisionRepositoryReviewRouterWorkflow(gatewayInput, {
+    targets: new StaticWorkflowProvisioningTarget(activeTarget),
+    setupGateway,
+    provisioning: new CapturingProvisioningRepository(),
+    configurations: savedConfigurations(),
+    trustedGithubRepositoryId: "123456",
+  });
+  const files = setupGateway.input!.workflowFiles;
+  expect(files).toHaveLength(1);
+  expect(files[0]!.path).toBe(".github/workflows/reviewrouter-codex.yml");
+  const file = files[0]!;
+  const job = parse("content" in file ? file.content : "").jobs["codex-review"];
+  expect(job.with).toMatchObject({
+    codex_session_mode: "account-gateway",
+    workflow_schema_version: 2,
+    provider_instance_id: "codex-rotating:123456",
+    runtime_config_mode: "oidc",
+  });
+  expect(job.uses).toBe(
+    gatewayInput.actionRef.replace(
+      "@",
+      "/.github/workflows/reviewrouter-t0-reusable.yml@",
+    ),
+  );
+  expect(job.secrets).toBeUndefined();
+});
+it.each([
+  ["missing-mode", { codexSessionMode: undefined }],
+  ["wrong-mode", { codexSessionMode: "oauth" }],
+  ["mutable-ref", { actionRef: "777genius/review-router@main" }],
+  ["missing-ref", { actionRef: "" }],
+  ["wrong-repo-ref", { actionRef: `other/repo@${"a".repeat(40)}` }],
+  ["uppercase-ref", { actionRef: `777genius/review-router@${"A".repeat(40)}` }],
+  ["missing-identity", { githubRepositoryId: undefined }],
+  ["invalid-identity", { githubRepositoryId: "01" }],
+  ["different-identity", { githubRepositoryId: "654321" }],
+  ["isolated-path", { githubRepositoryId: "1228051727" }],
+  ["static", { runtimeConfigMode: "static" }],
+  ["static-env", { staticRuntimeEnv: {} }],
+  ["explicit", { workflowStyle: "explicit" }],
+  ["conflict", { conflictReviewFallbackEnabled: true }],
+  ["rotating", { codexRotatingProviderInstanceId: "codex-rotating:123456" }],
+] as const)(
+  "denies gateway %s before setup effects",
+  async (_reason, overrides) => {
+    const setupGateway = new CapturingSetupGateway();
+    const provisioning = new CapturingProvisioningRepository();
+    await expect(
+      provisionReviewRouterWorkflow(
+        { ...gatewayInput, ...overrides } as ProvisionWorkflowInput,
+        {
+          setupGateway,
+          provisioning,
+          configurations: savedConfigurations(),
+          trustedGithubRepositoryId: "123456",
+        },
+      ),
+    ).rejects.toThrow();
+    expect(setupGateway.input).toBeNull();
+    expect(provisioning.attempts).toBe(0);
+  },
+);
+it.each(["missing", "workspace", "mixed"])(
+  "denies %s saved gateway selection before setup",
+  async (selection) => {
+    const setupGateway = new CapturingSetupGateway();
+    const configurations = savedConfigurations(
+      selection === "mixed" ? "repository" : selection,
+    );
+    if (selection === "mixed")
+      configurations.findLatest = async () => ({
+        version: 1,
+        config: parseReviewConfigurationStrict({
+          ...savedGatewayConfig,
+          providers: [
+            ...savedGatewayConfig.providers,
+            safeDefaultReviewConfiguration.provider,
+          ],
+        }),
+      });
+    await expect(
+      provisionReviewRouterWorkflow(gatewayInput, {
+        setupGateway,
+        provisioning: new CapturingProvisioningRepository(),
+        configurations,
+        trustedGithubRepositoryId: "123456",
+      }),
+    ).rejects.toThrow();
+    expect(setupGateway.input).toBeNull();
+  },
+);
+it("denies forged gateway runtime hints without saved configuration", async () => {
+  const setupGateway = new CapturingSetupGateway();
+  const input = {
+    ...gatewayInput,
+    staticRuntimeEnv: { REVIEW_AUTH_MODE: "codex-account-gateway" },
+  };
+  delete input.codexSessionMode;
+  await expect(
+    provisionReviewRouterWorkflow(input, {
+      setupGateway,
+      provisioning: new CapturingProvisioningRepository(),
+    }),
+  ).rejects.toThrow("account_gateway_saved_config_required");
+  expect(setupGateway.input).toBeNull();
+});
+it("requires server repository identity even when the caller supplies a valid numeric ID", async () => {
+  const setupGateway = new CapturingSetupGateway();
+  await expect(
+    provisionReviewRouterWorkflow(gatewayInput, {
+      setupGateway,
+      provisioning: new CapturingProvisioningRepository(),
+      configurations: savedConfigurations(),
+    }),
+  ).rejects.toThrow("account_gateway_repository_identity_required");
+  expect(setupGateway.input).toBeNull();
+});
 
 describe("provisionReviewRouterWorkflow", () => {
   it("renders non-Codex workflow and records setup PR state", async () => {

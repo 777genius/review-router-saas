@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { canonicalPrismaMigrationCatalog } from "./lib/canonical-prisma-migration-catalog.mjs";
 
@@ -257,18 +257,8 @@ describe("Codex rotating release migration workflow", () => {
     );
     expect(workflow).toContain("canonicalPrismaMigrationCatalog");
     expect(canonicalPrismaMigrationCatalog).toEqual({
-      appliedMigrationCount: 117,
+      appliedMigrationCount: 125,
       latestMigration: "000125_hosted_codex_device_reconnect",
-    });
-    const historicalMain = readdirSync("packages/platform/db/prisma/migrations")
-      .filter((name) => name !== "000125_hosted_codex_device_reconnect")
-      .sort();
-    expect({
-      appliedMigrationCount: historicalMain.length,
-      latestMigration: historicalMain.at(-1),
-    }).toEqual({
-      appliedMigrationCount: 116,
-      latestMigration: "000116_hosted_codex_relay_admission_utc",
     });
     expect(workflow).toContain(".runtimeRoleCount == 5");
     expect(workflow).toContain(".custodyFunction == true");

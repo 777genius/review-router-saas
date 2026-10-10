@@ -6,7 +6,15 @@ export * from "./application/ports/review-configuration-operator-ports";
 export * from "./application/use-cases/manage-operator-review-configuration";
 export * from "./application/use-cases/map-config-to-runtime-env";
 export * from "./application/use-cases/resolve-review-configuration";
-export * from "./application/use-cases/save-review-configuration";
+export {
+  saveReviewConfiguration,
+  findReviewConfiguration,
+  findRepositoryReviewConfigurations,
+  clearReviewConfiguration,
+  saveReviewConfigurationWithOperation,
+  findReviewConfigurationOperation,
+  type RepositoryReviewConfigurationResult,
+} from "./application/use-cases/save-review-configuration";
 export * from "./infrastructure/operator/hashed-review-configuration-operator-authorization";
 export * from "./infrastructure/prisma/prisma-review-configuration-operator-repository";
 export * from "./infrastructure/prisma/prisma-review-configuration-repository";

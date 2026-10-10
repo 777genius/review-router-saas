@@ -52,7 +52,20 @@ describe("ProductionReviewMutationAuthorityProofFacts", () => {
     expect(facts.facts.noTrackedLegacyActivity).toBe(false);
   });
 
-  it("reports a missing dispatch permission as an activation fact", async () => {
+  it("rejects activation without dispatch for a dispatch-only workflow", async () => {
+    const facts = await createFacts({
+      dispatchCapabilityAvailable: false,
+      workflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.DurableDispatchV1,
+    }).inspectActivationFacts({
+      scmRepositoryIdentityId: "identity-1",
+      laneKind: ReviewMutationLaneKind.HostedReviewRouterApp,
+    });
+
+    expect(facts.facts.dispatchCapabilityAvailable).toBe(false);
+  });
+
+  it("admits canonical client-triggered activation after the drain without dispatch", async () => {
     const facts = await createFacts({
       dispatchCapabilityAvailable: false,
     }).inspectActivationFacts({
@@ -60,6 +73,24 @@ describe("ProductionReviewMutationAuthorityProofFacts", () => {
       laneKind: ReviewMutationLaneKind.HostedReviewRouterApp,
     });
 
+    expect(facts.facts).toMatchObject({
+      noTrackedLegacyActivity: true,
+      workflowInventoryCompatible: true,
+      registeredReleaseSelected: true,
+      dispatchCapabilityAvailable: true,
+    });
+  });
+
+  it("does not substitute an incompatible client-triggered inventory for dispatch", async () => {
+    const facts = await createFacts({
+      dispatchCapabilityAvailable: false,
+      inventoryCompatible: false,
+    }).inspectActivationFacts({
+      scmRepositoryIdentityId: "identity-1",
+      laneKind: ReviewMutationLaneKind.HostedReviewRouterApp,
+    });
+
+    expect(facts.facts.workflowInventoryCompatible).toBe(false);
     expect(facts.facts.dispatchCapabilityAvailable).toBe(false);
   });
 
@@ -163,6 +194,7 @@ const configuredRelease: ProducerRelease = {
 
 function createFacts(
   input: {
+    readonly inventoryCompatible?: boolean;
     readonly drainNotBefore?: Date;
     readonly dispatchCapabilityAvailable?: boolean;
     readonly authorityMissing?: boolean;
@@ -259,7 +291,7 @@ function createFacts(
     },
     workflowInventory: {
       inspectReviewV2ManagedWorkflowInventory: async () => ({
-        compatible: true,
+        compatible: input.inventoryCompatible ?? true,
         inventoryHash: "a".repeat(64),
         actionCommitSha: "c".repeat(40),
         workflowSchemaVersion:

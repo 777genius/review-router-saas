@@ -8,6 +8,7 @@ import {
   ReviewInvocationLeasePurpose,
   ReviewInvocationLeaseTransitionStatus,
   ReviewTaskKind,
+  ReviewWorkSlotState,
   canonicalInvocationFlightIdentity,
   invocationFlightIdentityFrom,
   type PrepareReviewExecutionCommand,
@@ -77,6 +78,61 @@ describe("InvocationFlight singleflight", () => {
     expect(
       (await store.findExecution("execution-1"))?.activeLeases,
     ).toHaveLength(1);
+  });
+
+  it("reports exhausted attempt budget after the final provider lease is released", async () => {
+    const store = new InMemoryReviewExecutionStore();
+    await prepareAndAdmit(store, scope, "execution-1", revision);
+    const useCase = new AcquireOrJoinInvocationFlight(store, store, store);
+
+    for (let index = 1; index <= 4; index += 1) {
+      const owner = await useCase.execute(
+        leaseCommand({
+          index,
+          scope,
+          executionId: "execution-1",
+          now: plus(index * 2),
+        }),
+      );
+      expect(owner.status).toBe(
+        AcquireOrJoinInvocationFlightStatus.OwnerAcquired,
+      );
+      const released = await store.releaseLease({
+        leaseId: owner.flight!.ownerLeaseId,
+        ownerIdHash: owner.flight!.ownerIdHash,
+        leaseCapabilityId: `capability-${index}`,
+        fencingToken: owner.flight!.fencingToken,
+        now: plus(index * 2 + 1),
+      });
+      expect(released.status).toBe(
+        ReviewInvocationLeaseTransitionStatus.Applied,
+      );
+    }
+
+    const exhausted = await store.findExecution("execution-1");
+    expect(exhausted?.execution.workSlots[0]).toMatchObject({
+      state: ReviewWorkSlotState.Exhausted,
+      attemptBudget: 4,
+      nextAttemptOrdinal: 5,
+    });
+    expect(exhausted?.activeLeases).toHaveLength(0);
+    for (const index of [5, 6]) {
+      const result = await useCase.execute(
+        leaseCommand({
+          index,
+          scope,
+          executionId: "execution-1",
+          now: plus(index * 2),
+        }),
+      );
+      expect(result.status).toBe(
+        AcquireOrJoinInvocationFlightStatus.AttemptBudgetExhausted,
+      );
+      expect(result.flight).toBeUndefined();
+    }
+    expect(
+      (await store.findExecution("execution-1"))?.activeLeases,
+    ).toHaveLength(0);
   });
 
   it("never joins an active flight from another revision", async () => {

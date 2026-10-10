@@ -561,6 +561,17 @@ export class InMemoryReviewRunControlStore
     };
   }
 
+  async findReviewRunAuthorizationForAdmission(
+    input: import("../../application/ports/review-run-authorization-ports").ReviewRunAuthorizationAdmissionLookup,
+  ): Promise<ReviewRunAuthorization | null> {
+    const row = [...this.authorizations.values()].find((candidate) =>
+      Object.entries(input).every(
+        ([key, value]) => candidate[key as keyof typeof input] === value,
+      ),
+    );
+    return row ? cloneReviewRunAuthorization(row) : null;
+  }
+
   async findReviewRunAuthorizationById(
     authorizationId: string,
   ): Promise<ReviewRunAuthorization | null> {
@@ -583,6 +594,31 @@ export class InMemoryReviewRunControlStore
             authorization: cloneReviewRunAuthorization(existing),
           }
         : { status: ReviewRunAuthorizationCreateStatus.ReplayConflict };
+    }
+    const pinnedOwner = candidate.runtimeSnapshotCanonicalJson
+      ? [...this.authorizations.values()].find(
+          (original) =>
+            original.workspaceId === candidate.workspaceId &&
+            original.repositoryConnectionId ===
+              candidate.repositoryConnectionId &&
+            original.scmRepositoryIdentityId ===
+              candidate.scmRepositoryIdentityId &&
+            original.sourceRunId === candidate.sourceRunId &&
+            original.sourceRunAttempt === candidate.sourceRunAttempt,
+        )
+      : undefined;
+    if (pinnedOwner) {
+      return pinnedOwner.runtimeSnapshotCanonicalJson &&
+        reviewRunAuthorizationImmutableKey(pinnedOwner) ===
+          reviewRunAuthorizationImmutableKey({
+            ...candidate,
+            oidcReplayKeyHash: pinnedOwner.oidcReplayKeyHash,
+          })
+        ? {
+            status: ReviewRunAuthorizationCreateStatus.Restored,
+            authorization: cloneReviewRunAuthorization(pinnedOwner),
+          }
+        : { status: ReviewRunAuthorizationCreateStatus.RunAttemptConflict };
     }
     const runOwner = this.authorizationIdsByRunAttempt.get(
       reviewRunAttemptKey(candidate),
@@ -632,6 +668,32 @@ export class InMemoryReviewRunControlStore
         status: ReviewRunAuthorizationCreateStatus.Restored,
         authorization: cloneReviewRunAuthorization(existing),
       };
+    }
+    if (input.candidate.runtimeSnapshotCanonicalJson) {
+      const original = await this.findReviewRunAuthorizationForAdmission({
+        workspaceId: input.candidate.workspaceId,
+        repositoryConnectionId: input.candidate.repositoryConnectionId,
+        scmRepositoryIdentityId: input.candidate.scmRepositoryIdentityId,
+        sourceRunId: input.candidate.sourceRunId,
+        sourceRunAttempt: input.candidate.sourceRunAttempt,
+        protocolOfferHash: input.candidate.protocolOfferHash,
+      });
+      if (original?.runtimeSnapshotCanonicalJson) {
+        if (
+          reviewRunAuthorizationImmutableKey(original) !==
+          reviewRunAuthorizationImmutableKey({
+            ...input.candidate,
+            oidcReplayKeyHash: original.oidcReplayKeyHash,
+          })
+        ) {
+          return { status: ReviewRunAuthorizationCreateStatus.ReplayConflict };
+        }
+        this.requireAuthorizationEvent(original);
+        return {
+          status: ReviewRunAuthorizationCreateStatus.Restored,
+          authorization: original,
+        };
+      }
     }
     if (!this.admissionFenceMatches(input.candidate, input.fence)) {
       return { status: ReviewRunAuthorizationCreateStatus.EligibilityChanged };

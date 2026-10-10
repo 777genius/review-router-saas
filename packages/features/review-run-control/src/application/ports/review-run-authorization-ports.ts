@@ -45,7 +45,21 @@ export enum ReviewRunAuthorizationTerminateStatus {
   Missing = "missing",
 }
 
+export type ReviewRunAuthorizationAdmissionLookup = Pick<
+  ReviewRunAuthorizationCandidate,
+  | "workspaceId"
+  | "repositoryConnectionId"
+  | "scmRepositoryIdentityId"
+  | "sourceRunId"
+  | "sourceRunAttempt"
+  | "protocolOfferHash"
+>;
+
 export interface ReviewRunAuthorizationQueryPort {
+  /** Hint only: atomic creation still checks replay ownership and all immutable facts. */
+  findReviewRunAuthorizationForAdmission?(
+    input: ReviewRunAuthorizationAdmissionLookup,
+  ): Promise<ReviewRunAuthorization | null>;
   findReviewRunAuthorizationById(
     authorizationId: string,
   ): Promise<ReviewRunAuthorization | null>;

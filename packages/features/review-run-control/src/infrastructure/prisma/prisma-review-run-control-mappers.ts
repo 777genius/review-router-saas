@@ -179,6 +179,7 @@ export function reviewRunAuthorizationToDomain(
   row: PrismaReviewRunAuthorization,
 ): ReviewRunAuthorization {
   return {
+    runtimeSnapshotCanonicalJson: row.runtimeSnapshotCanonicalJson ?? null,
     authorizationId: row.authorizationId,
     version: row.version,
     workspaceId: row.workspaceId,

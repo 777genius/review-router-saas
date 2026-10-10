@@ -1234,7 +1234,7 @@ function validateCompositionConfiguration(
     !Number.isSafeInteger(dependencies.authorizationTtlMs) ||
     dependencies.authorizationTtlMs <= 0 ||
     !Number.isSafeInteger(dependencies.maxAuthorizationLifetimeMs) ||
-    dependencies.maxAuthorizationLifetimeMs < dependencies.authorizationTtlMs
+    dependencies.maxAuthorizationLifetimeMs <= 0
   ) {
     throw new Error("review_action_v2_run_control_configuration_invalid");
   }

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@agent-teams/account-gateway": "file:../../vendor/account-gateway/agent-teams-account-gateway-0.1.0-e8c9216.tgz",
     "@octokit/app": "^16.1.2",
     "@radix-ui/react-dropdown-menu": "2.1.16",
     "@radix-ui/react-select": "^2.2.6",
@@ -17,6 +18,7 @@
     "@reviewrouter/features-memory": "workspace:*",
     "@reviewrouter/features-org-ruleset-provisioning": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
+    "@reviewrouter/features-provider-accounts": "workspace:*",
     "@reviewrouter/features-provider-setup": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",
     "@reviewrouter/features-repo-health": "workspace:*",

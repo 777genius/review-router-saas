@@ -11,11 +11,35 @@ export const reviewProviderAuthModes = [
   "codex_subscription_oauth",
   "codex_subscription_oauth_rotating",
   "codex_subscription_oauth_hosted_pool",
+  "codex_account_gateway",
   "codex_openai_api_key",
   "mimo_token_plan_api_key",
   "claude_code_oauth",
   "openrouter_api_key",
 ] as const;
+
+// Product-owned opaque references only; no URL, credentials or native routing data.
+export const gatewayReferenceSchema = z
+  .string()
+  .min(1)
+  .max(160)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/)
+  .refine(
+    (ref) => !/^(?:sk-|ghp_|github_pat_|xox[baprs]-)/.test(ref),
+    "gateway reference must be non-secret",
+  );
+
+export const gatewayModelSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/)
+  .refine(
+    (model) =>
+      !model.includes("://") &&
+      !/^(?:sk-|ghp_|github_pat_|xox[baprs]-)/.test(model),
+    "gateway model must be a safe model name",
+  );
 
 export const providerKindSchema = z.enum(reviewProviderKinds);
 export const providerAuthModeSchema = z.enum(reviewProviderAuthModes);
@@ -27,6 +51,7 @@ export type RuntimeAuthMode =
   | "codex-oauth"
   | "codex-oauth-rotating"
   | "codex-oauth-hosted-pool"
+  | "codex-account-gateway"
   | "openai-api"
   | "mimo-token-plan-api"
   | "claude-oauth"
@@ -55,6 +80,7 @@ export type ProviderSetupKind =
   | "codex_oauth"
   | "codex_oauth_rotating"
   | "codex_oauth_hosted_pool"
+  | "account_gateway"
   | "openai_api_key"
   | "mimo_token_plan_api_key"
   | "claude_code_oauth"
@@ -165,6 +191,14 @@ const authModeMetadata = {
     // GitHub Actions receives only an invocation-bounded relay grant.
     secretNames: [],
   },
+  codex_account_gateway: {
+    authMode: "codex_account_gateway",
+    providerKind: "codex",
+    runtimeAuthMode: "codex-account-gateway",
+    setupKind: "account_gateway",
+    label: "Account Gateway",
+    secretNames: [],
+  },
   codex_openai_api_key: {
     authMode: "codex_openai_api_key",
     providerKind: "codex",
@@ -202,13 +236,21 @@ const authModeMetadata = {
 export function getProviderCatalogEntry(
   kind: ProviderKind,
 ): ProviderCatalogEntry {
-  return providerCatalog[kind];
+  const entry = providerCatalog[kind];
+  if (!Object.hasOwn(providerCatalog, kind)) {
+    throw new Error("unknown_provider_kind");
+  }
+  return entry;
 }
 
 export function getProviderAuthModeMetadata(
   authMode: ProviderAuthMode,
 ): ProviderAuthModeMetadata {
-  return authModeMetadata[authMode];
+  const metadata = authModeMetadata[authMode];
+  if (!Object.hasOwn(authModeMetadata, authMode)) {
+    throw new Error("unknown_provider_auth_mode");
+  }
+  return metadata;
 }
 
 export function providerKindForAuthMode(
@@ -291,11 +333,11 @@ export function cliToolsForProvider(
   }
 }
 
-export function getDefaultProviderConfigForAuthMode(
-  authMode: ProviderAuthMode,
+export function getDefaultProviderConfigForAuthMode<T extends ProviderAuthMode>(
+  authMode: T,
 ): {
   readonly kind: ProviderKind;
-  readonly authMode: ProviderAuthMode;
+  readonly authMode: T;
   readonly model: string;
   readonly reasoningEffort: typeof defaultProviderReasoningEffort;
   readonly agenticContext: boolean;

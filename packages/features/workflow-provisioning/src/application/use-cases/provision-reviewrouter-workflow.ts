@@ -1,6 +1,8 @@
 import {
   mapConfigToRuntimeEnv,
   safeDefaultReviewConfiguration,
+  resolveReviewConfiguration,
+  type ReviewConfigurationRepositoryPort,
 } from "@reviewrouter/features-review-config";
 import {
   recordAuditEvent,
@@ -9,9 +11,12 @@ import {
 import {
   renderCanonicalCodexRotatingInteractionWorkflowV3,
   renderReviewRouterWorkflowFiles,
+  renderAccountGatewayWorkflow,
+  defaultCodexRotatingWorkflowPath,
 } from "../../domain/workflow-template";
 import {
   createProvisionWorkflowPlan,
+  isAccountGatewayConfiguration,
   type ProvisionWorkflowInput,
 } from "../../domain/workflow-provisioning";
 import type { WorkflowProvisioningRepositoryPort } from "../ports/workflow-provisioning-repository-port";
@@ -24,13 +29,72 @@ export type ProvisionReviewRouterWorkflowDependencies = {
   readonly enabled?: boolean;
   readonly actor?: string;
   readonly auditMetadata?: Readonly<Record<string, unknown>>;
+  readonly configurations?: ReviewConfigurationRepositoryPort;
+  readonly trustedGithubRepositoryId?: string;
 };
 
 export async function provisionReviewRouterWorkflow(
   input: ProvisionWorkflowInput,
   dependencies: ProvisionReviewRouterWorkflowDependencies,
 ) {
-  const plan = createProvisionWorkflowPlan(input);
+  const saved = dependencies.configurations
+    ? await resolveReviewConfiguration(
+        {
+          scope: "repository",
+          workspaceId: input.workspaceId,
+          repositoryId: input.repositoryId,
+        },
+        { configurations: dependencies.configurations },
+      )
+    : undefined;
+  const gatewaySelected = saved
+    ? isAccountGatewayConfiguration(saved.config)
+    : false;
+  const gatewayHint =
+    input.codexSessionMode !== undefined ||
+    input.staticRuntimeEnv?.REVIEW_AUTH_MODE === "codex-account-gateway" ||
+    input.staticRuntimeEnv?.REVIEW_ROUTER_GATEWAY_BINDING_ID !== undefined ||
+    input.staticRuntimeEnv?.REVIEW_ROUTER_GATEWAY_PROFILE_REF !== undefined;
+  if (gatewayHint && !gatewaySelected) {
+    throw new Error("account_gateway_saved_config_required");
+  }
+  if (
+    gatewaySelected &&
+    (!dependencies.trustedGithubRepositoryId ||
+      input.githubRepositoryId !== dependencies.trustedGithubRepositoryId)
+  ) {
+    throw new Error("account_gateway_repository_identity_required");
+  }
+  if (
+    gatewaySelected &&
+    (saved?.source !== "repository" ||
+      input.codexSessionMode !== "account-gateway" ||
+      input.runtimeConfigMode !== "oidc" ||
+      input.staticRuntimeEnv !== undefined ||
+      (input.workflowStyle !== undefined &&
+        input.workflowStyle !== "reusable") ||
+      input.conflictReviewFallbackEnabled === true ||
+      input.forkAgenticSandboxEnabled === true ||
+      (input.discussionMode !== undefined && input.discussionMode !== "off") ||
+      input.codexRotatingProviderInstanceId !== undefined ||
+      input.codexRotatingWorkflowSecretNamespace !== undefined ||
+      input.codexRotatingReviewActionV2Mode !== undefined ||
+      input.codexRotatingWorkflowSchemaVersion !== undefined ||
+      (input.workflowPath !== undefined &&
+        input.workflowPath !== defaultCodexRotatingWorkflowPath))
+  ) {
+    throw new Error("account_gateway_workflow_options_not_supported");
+  }
+  const gatewayFile = gatewaySelected
+    ? renderAccountGatewayWorkflow({
+        actionRef: input.actionRef,
+        apiUrl: input.apiUrl,
+        githubRepositoryId: dependencies.trustedGithubRepositoryId!,
+      })
+    : undefined;
+  const plan = createProvisionWorkflowPlan(
+    gatewayFile ? { ...input, workflowPath: gatewayFile.path } : input,
+  );
   if (plan.codexRotatingProviderInstanceId) {
     renderCanonicalCodexRotatingInteractionWorkflowV3({
       actionRef: plan.actionRef,
@@ -83,49 +147,54 @@ export async function provisionReviewRouterWorkflow(
   }
 
   try {
-    const staticRuntimeEnv =
-      plan.staticRuntimeEnv ??
-      mapConfigToRuntimeEnv(safeDefaultReviewConfiguration);
-    assertProductionCodexWorkflowProvisioningAllowed({
-      codexRotatingProviderInstanceId: plan.codexRotatingProviderInstanceId,
-      staticRuntimeEnv,
-    });
+    const staticRuntimeEnv = gatewayFile
+      ? {}
+      : (plan.staticRuntimeEnv ??
+        mapConfigToRuntimeEnv(safeDefaultReviewConfiguration));
+    if (!gatewayFile) {
+      assertProductionCodexWorkflowProvisioningAllowed({
+        codexRotatingProviderInstanceId: plan.codexRotatingProviderInstanceId,
+        staticRuntimeEnv,
+      });
+    }
 
-    const workflowFiles = renderReviewRouterWorkflowFiles({
-      actionRef: plan.actionRef,
-      apiUrl: plan.apiUrl,
-      runtimeConfigMode: plan.runtimeConfigMode,
-      workflowStyle: plan.workflowStyle,
-      conflictReviewFallbackEnabled:
-        plan.conflictReviewFallbackEnabled === true,
-      forkAgenticSandboxEnabled: plan.forkAgenticSandboxEnabled === true,
-      ...(plan.codexRotatingProviderInstanceId
-        ? {
-            codexRotatingProviderInstanceId:
-              plan.codexRotatingProviderInstanceId,
-            codexRotatingWorkflowPath: plan.workflowPath,
-            ...(plan.codexRotatingWorkflowSecretNamespace
-              ? {
-                  codexRotatingActiveSecretNamespace:
-                    plan.codexRotatingWorkflowSecretNamespace,
-                }
-              : {}),
-          }
-        : {}),
-      ...(plan.codexRotatingReviewActionV2Mode
-        ? {
-            codexRotatingReviewActionV2Mode:
-              plan.codexRotatingReviewActionV2Mode,
-          }
-        : {}),
-      ...(plan.codexRotatingWorkflowSchemaVersion !== undefined
-        ? {
-            codexRotatingWorkflowSchemaVersion:
-              plan.codexRotatingWorkflowSchemaVersion,
-          }
-        : {}),
-      staticRuntimeEnv,
-    });
+    const workflowFiles = gatewayFile
+      ? [gatewayFile]
+      : renderReviewRouterWorkflowFiles({
+          actionRef: plan.actionRef,
+          apiUrl: plan.apiUrl,
+          runtimeConfigMode: plan.runtimeConfigMode,
+          workflowStyle: plan.workflowStyle,
+          conflictReviewFallbackEnabled:
+            plan.conflictReviewFallbackEnabled === true,
+          forkAgenticSandboxEnabled: plan.forkAgenticSandboxEnabled === true,
+          ...(plan.codexRotatingProviderInstanceId
+            ? {
+                codexRotatingProviderInstanceId:
+                  plan.codexRotatingProviderInstanceId,
+                codexRotatingWorkflowPath: plan.workflowPath,
+                ...(plan.codexRotatingWorkflowSecretNamespace
+                  ? {
+                      codexRotatingActiveSecretNamespace:
+                        plan.codexRotatingWorkflowSecretNamespace,
+                    }
+                  : {}),
+              }
+            : {}),
+          ...(plan.codexRotatingReviewActionV2Mode
+            ? {
+                codexRotatingReviewActionV2Mode:
+                  plan.codexRotatingReviewActionV2Mode,
+              }
+            : {}),
+          ...(plan.codexRotatingWorkflowSchemaVersion !== undefined
+            ? {
+                codexRotatingWorkflowSchemaVersion:
+                  plan.codexRotatingWorkflowSchemaVersion,
+              }
+            : {}),
+          staticRuntimeEnv,
+        });
 
     const pullRequest =
       await dependencies.setupGateway.createOrUpdateSetupPullRequest({

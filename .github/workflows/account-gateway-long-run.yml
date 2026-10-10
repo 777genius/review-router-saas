@@ -1,0 +1,82 @@
+name: Account Gateway long-run P115
+
+# Controlled HTTP, synthetic signed OIDC and compressed clock with real Prisma/SQL121.
+# This does not qualify native/provider, elapsed-time or memory acceptance.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/account-gateway-long-run.yml
+      - apps/api/**
+      - apps/worker/**
+      - scripts/review-action-v2-production-e2e/support/**
+      - scripts/install-private-dependencies.mjs
+      - packages/**
+      - vendor/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - vitest.config.ts
+      - tsconfig*.json
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/account-gateway-long-run.yml
+      - apps/api/**
+      - apps/worker/**
+      - scripts/review-action-v2-production-e2e/support/**
+      - scripts/install-private-dependencies.mjs
+      - packages/**
+      - vendor/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - vitest.config.ts
+      - tsconfig*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: account-gateway-long-run-p115-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17.10@sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317
+        env:
+          # Fresh service only; historical SQL98/110 require the bootstrap superuser.
+          POSTGRES_USER: fixture_owner
+          POSTGRES_DB: rr_gateway_test_p115_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U fixture_owner -d rr_gateway_test_p115_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://fixture_owner@127.0.0.1:5432/rr_gateway_test_p115_ci
+      RR_P115_PG_TEST_URL: postgresql://fixture_owner@127.0.0.1:5432/rr_gateway_test_p115_ci
+      RR_P115_PG_TEST: "1"
+      RR_P115_FRESH_MIGRATED_DATABASE: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.21.0
+      - name: Install pinned dependencies
+        run: |
+          npm install --global pnpm@10.33.0
+          node scripts/install-private-dependencies.mjs --frozen-lockfile
+      - name: Generate actual Prisma client
+        run: pnpm --filter @reviewrouter/platform-db db:generate
+      - name: Apply all historical migrations to disposable PostgreSQL
+        run: pnpm --filter @reviewrouter/platform-db db:migrate:deploy
+      - name: Qualify original capability through controlled Gateway HTTP
+        run: pnpm exec vitest run apps/api/src/review-run-gateway-long-run.postgres.test.ts

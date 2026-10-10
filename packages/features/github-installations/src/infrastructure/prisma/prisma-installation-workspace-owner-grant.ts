@@ -46,46 +46,18 @@ export class PrismaInstallationWorkspaceOwnerGrant implements InstallationWorksp
         },
         select: { id: true },
       });
-      const existingByLogin = await tx.workspaceMember.findUnique({
+      // The explicit grant may enroll a first owner, but cannot widen any
+      // existing stable membership or reconcile ambiguous legacy login rows.
+      if (existingByUser) return;
+      const existingByLogin = await tx.workspaceMember.findFirst({
         where: {
-          workspaceId_githubLogin: {
-            workspaceId: installation.workspaceId,
-            githubLogin: grant.githubLogin,
-          },
+          workspaceId: installation.workspaceId,
+          githubLogin: { equals: grant.githubLogin, mode: "insensitive" },
         },
         select: { id: true },
       });
-
-      if (
-        existingByUser &&
-        existingByLogin &&
-        existingByUser.id !== existingByLogin.id
-      ) {
-        await tx.workspaceMember.delete({
-          where: { id: existingByLogin.id },
-        });
-      }
-
-      if (existingByUser) {
-        await tx.workspaceMember.update({
-          where: { id: existingByUser.id },
-          data: {
-            githubLogin: grant.githubLogin,
-            role: "owner",
-          },
-        });
-        return;
-      }
-
       if (existingByLogin) {
-        await tx.workspaceMember.update({
-          where: { id: existingByLogin.id },
-          data: {
-            userId: user.id,
-            role: "owner",
-          },
-        });
-        return;
+        throw new Error("installation_owner_grant_identity_ambiguous");
       }
 
       await tx.workspaceMember.create({

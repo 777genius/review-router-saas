@@ -8,6 +8,7 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readReviewConfigurationForm } from "./dashboard-action-form-readers";
 import {
   safeDefaultReviewConfiguration,
   type ReviewConfiguration,
@@ -22,8 +23,15 @@ import {
 import {
   clearProviderSecretStatusCacheForTest,
   ReviewConfigForm,
+  WorkspaceReviewConfigForm,
+  RepositoryPolicyEditor,
   RepositoryPolicyOverrideDetails,
 } from "./repository-policy-editor";
+import type {
+  AccountView,
+  AccountsPage,
+  AccountsResult,
+} from "../../src/server/account-gateway-accounts";
 
 const routerMock = vi.hoisted(() => ({
   refresh: vi.fn(),
@@ -102,7 +110,400 @@ function pageText(): string {
   return document.body.textContent?.replace(/\s+/g, " ") ?? "";
 }
 
+const gatewayPage: AccountsPage = {
+  profiles: [
+    {
+      id: "profile-mimo",
+      label: "MiMo",
+      protocol: "openai-responses",
+      models: ["mimo-v2-pro", "openai/gpt-5.6-sol"],
+    },
+    {
+      id: "profile-codex",
+      label: "Codex",
+      protocol: "openai-responses",
+      models: ["gpt-6.1-sol"],
+    },
+  ],
+  accounts: ["mimo", "codex"].map(
+    (name): AccountView => ({
+      connectionId: `connection-${name}`,
+      label: `Workspace ${name}`,
+      profileId: `profile-${name}`,
+      profileLabel: name,
+      state: "active",
+      gatewayRevision: 1,
+      mirrorRevision: 1,
+      binding: {
+        id: `binding-${name}`,
+        revision: 1,
+        state: "active",
+        fencePending: false,
+      },
+    }),
+  ),
+  nextCursor: null,
+};
+function choose(label: string, option: RegExp): void {
+  fireEvent.click(screen.getByRole("combobox", { name: label }));
+  fireEvent.click(screen.getByRole("option", { name: option }));
+}
+
 describe("ReviewConfigForm", () => {
+  it.each(["remove-direct", "remove-gateway", "switch-to-direct"])(
+    "blocks unsupported saved gateway combinations until explicit %s repair",
+    async (repair) => {
+      const provider = {
+        ...safeDefaultReviewConfiguration.provider,
+        kind: "codex",
+        authMode: "codex_account_gateway",
+        gatewayBindingId: "binding-mimo",
+        gatewayProfileRef: "profile-mimo",
+        model: "mimo-v2-pro",
+        fastMode: false,
+        requiredHealthy: true,
+      } satisfies ReviewProviderConfiguration;
+      const extra =
+        repair === "remove-gateway"
+          ? { ...provider, model: "openai/gpt-5.6-sol", requiredHealthy: false }
+          : {
+              ...openRouterReviewConfiguration().provider,
+              model: "anthropic/claude-sonnet-4.5",
+            };
+      const action = vi.fn();
+      render(
+        <ReviewConfigForm
+          action={action}
+          config={{
+            ...safeDefaultReviewConfiguration,
+            provider,
+            providers: [provider, extra],
+          }}
+          gatewayAccounts={{ status: "ok", value: gatewayPage }}
+          modelOptions={modelOptions}
+          hiddenFields={[]}
+          mutationsEnabled={true}
+          submitLabel="Save"
+        />,
+      );
+      const form = document.querySelector("form")!;
+      const payload = () => readReviewConfigurationForm(new FormData(form));
+      const submit = screen.getByRole("button", { name: "Save" });
+      const add = screen.getByRole("button", { name: "Add provider" });
+      expect(payload().providers).toEqual([provider, extra]);
+      expect(submit.hasAttribute("disabled")).toBe(true);
+      fireEvent.submit(form);
+      expect(action).not.toHaveBeenCalled();
+      expect(pageText()).toContain(
+        "Account Gateway currently supports only one provider",
+      );
+
+      if (repair === "switch-to-direct") {
+        fireEvent.click(
+          screen.getAllByRole("combobox", { name: "Provider auth" })[0]!,
+        );
+        fireEvent.click(
+          screen.getByRole("option", { name: /OpenRouter API key/i }),
+        );
+        expect(payload().providers[1]).toEqual(extra);
+        expect(payload().provider.authMode).toBe("openrouter_api_key");
+        expect(payload().provider.gatewayBindingId).toBeUndefined();
+        expect(payload().provider.gatewayProfileRef).toBeUndefined();
+        expect(add.hasAttribute("disabled")).toBe(false);
+        fireEvent.click(add);
+        expect(new FormData(form).get("providerCount")).toBe("3");
+        fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[2]!);
+        expect(payload().providers).toHaveLength(2);
+        fireEvent.click(
+          screen.getAllByRole("combobox", { name: "Provider auth" })[0]!,
+        );
+        const gateway = screen.getByRole("option", { name: /Account Gateway/ });
+        expect(gateway.getAttribute("aria-disabled")).toBe("true");
+        expect(gateway.textContent).toContain("only one provider");
+        fireEvent.keyDown(gateway, { key: "Escape" });
+      } else {
+        fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[1]!);
+        expect(payload().providers).toEqual([provider]);
+        expect(add.hasAttribute("disabled")).toBe(true);
+        fireEvent.click(add);
+        expect(payload().providers).toEqual([provider]);
+      }
+      expect(submit.hasAttribute("disabled")).toBe(false);
+      fireEvent.click(submit);
+      await waitFor(() => expect(action).toHaveBeenCalledTimes(1));
+      const saved = readReviewConfigurationForm(action.mock.calls[0]![0]);
+      expect(saved.providers).toEqual(payload().providers);
+      expect(
+        saved.providers.some((candidate) => candidate.requiredHealthy),
+      ).toBe(true);
+    },
+  );
+
+  // Regression: a newly configured provider could not enter gateway mode or submit a scoped tuple.
+  it.each(["workspace", "repository"])(
+    "chooses gateway account/profile/model in the %s form",
+    async (scope) => {
+      vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
+        status: "available_repository",
+      });
+      const save =
+        scope === "workspace"
+          ? saveWorkspaceReviewConfigClientAction
+          : saveRepositoryReviewConfigClientAction;
+      vi.mocked(save).mockResolvedValue({
+        params: { notice: "review_config_saved" },
+      });
+      const common = {
+        workspaceId: "workspace_1",
+        modelOptions,
+        gatewayAccounts: { status: "ok", value: gatewayPage } as const,
+        mutationsEnabled: true,
+      };
+      if (scope === "workspace")
+        render(
+          <WorkspaceReviewConfigForm
+            {...common}
+            config={safeDefaultReviewConfiguration}
+          />,
+        );
+      else {
+        render(
+          <RepositoryPolicyEditor
+            {...common}
+            effectiveConfig={safeDefaultReviewConfiguration}
+            repositoryConfig={null}
+            repository={{
+              id: "repo_1",
+              fullName: "test/disposable",
+              selected: true,
+              archived: false,
+            }}
+          />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: /Edit settings/ }));
+      }
+      const legacySecretChecks = vi.mocked(
+        checkProviderRepositorySecretClientAction,
+      ).mock.calls.length;
+      choose("Provider auth", /Account Gateway/);
+      const submit = screen.getByRole("button", {
+        name: /Save workspace default|Save repo settings/,
+      });
+      expect(submit.hasAttribute("disabled")).toBe(true);
+      fireEvent.submit(document.querySelector("form")!);
+      expect(save).not.toHaveBeenCalled();
+      choose("Account", /Workspace mimo/);
+      fireEvent.click(screen.getByRole("combobox", { name: "Model" }));
+      expect(screen.queryByRole("option", { name: "gpt-6.1-sol" })).toBeNull();
+      fireEvent.click(screen.getByRole("option", { name: "mimo-v2-pro" }));
+      expect(submit.hasAttribute("disabled")).toBe(false);
+      choose("Account", /Workspace codex/);
+      expect(submit.hasAttribute("disabled")).toBe(true);
+      fireEvent.submit(document.querySelector("form")!);
+      expect(save).not.toHaveBeenCalled();
+      choose("Model", /^gpt-6.1-sol$/);
+      fireEvent.click(submit);
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+      const payload = vi.mocked(save).mock.calls[0]![0];
+      expect(payload.get("workspaceId")).toBe("workspace_1");
+      if (scope === "repository")
+        expect(payload.get("repositoryId")).toBe("repo_1");
+      expect(readReviewConfigurationForm(payload).provider).toMatchObject({
+        authMode: "codex_account_gateway",
+        gatewayBindingId: "binding-codex",
+        gatewayProfileRef: "profile-codex",
+        model: "gpt-6.1-sol",
+        requiredHealthy: true,
+      });
+      expect(checkProviderRepositorySecretClientAction).toHaveBeenCalledTimes(
+        legacySecretChecks,
+      );
+    },
+  );
+
+  // Regression: refreshed choices must not replace a saved tuple or admit stale selections.
+  it.each([
+    "disabled",
+    "revoked",
+    "unbound",
+    "fence",
+    "wrong-profile",
+    "stale-model",
+    "denied",
+    "unavailable",
+    "pagination",
+  ])("preserves selection and blocks save after %s refresh", (condition) => {
+    const provider = {
+      ...safeDefaultReviewConfiguration.provider,
+      kind: "codex",
+      authMode: "codex_account_gateway",
+      gatewayBindingId: "binding-mimo",
+      gatewayProfileRef: "profile-mimo",
+      model: "mimo-v2-pro",
+    } satisfies ReviewProviderConfiguration;
+    const props = {
+      action: vi.fn(),
+      config: {
+        ...safeDefaultReviewConfiguration,
+        provider,
+        providers: [provider],
+      },
+      modelOptions,
+      hiddenFields: [],
+      mutationsEnabled: true,
+      submitLabel: "Save",
+    };
+    const { rerender } = render(
+      <ReviewConfigForm
+        {...props}
+        gatewayAccounts={{ status: "ok", value: gatewayPage }}
+      />,
+    );
+    const account: AccountView = {
+      ...gatewayPage.accounts[0]!,
+      binding: { ...gatewayPage.accounts[0]!.binding! },
+    };
+    if (condition === "disabled") account.state = "disabled";
+    if (condition === "revoked") account.binding!.state = "revoked";
+    if (condition === "unbound") account.binding = null;
+    if (condition === "fence") account.binding!.fencePending = true;
+    if (condition === "wrong-profile") account.profileId = "profile-codex";
+    const page: AccountsResult<AccountsPage> =
+      condition === "denied" || condition === "unavailable"
+        ? { status: condition }
+        : {
+            status: "ok",
+            value: {
+              ...gatewayPage,
+              profiles: gatewayPage.profiles.map((profile) => ({
+                ...profile,
+                models:
+                  condition === "stale-model"
+                    ? profile.models.filter((model) => model !== provider.model)
+                    : profile.models,
+              })),
+              accounts:
+                condition === "pagination"
+                  ? [gatewayPage.accounts[1]!]
+                  : [account, gatewayPage.accounts[1]!],
+              nextCursor: condition === "pagination" ? "next-page" : null,
+            },
+          };
+    rerender(<ReviewConfigForm {...props} gatewayAccounts={page} />);
+    expect(
+      screen.getByRole("button", { name: "Save" }).hasAttribute("disabled"),
+    ).toBe(true);
+    const form = document.querySelector("form")!;
+    expect(readReviewConfigurationForm(new FormData(form)).provider).toEqual(
+      provider,
+    );
+    fireEvent.submit(form);
+    expect(props.action).not.toHaveBeenCalled();
+    expect(pageText()).toContain(
+      "Choose an available account and model before saving",
+    );
+    if (condition === "pagination")
+      expect(pageText()).toContain("Additional accounts are not available");
+    if (condition === "denied" || condition === "unavailable") {
+      fireEvent.click(screen.getByRole("combobox", { name: "Provider auth" }));
+      expect(
+        screen
+          .getByRole("option", { name: /Account Gateway/ })
+          .getAttribute("aria-disabled"),
+      ).toBe("true");
+    }
+  });
+
+  it("preserves saved gateway model whitespace and ultra effort and offers max and ultra", () => {
+    const provider = {
+      kind: "codex",
+      authMode: "codex_account_gateway",
+      model: "openai/gpt-5.6-sol ",
+      reasoningEffort: "ultra",
+      agenticContext: true,
+      fastMode: false,
+      requiredHealthy: true,
+      gatewayBindingId: "binding-mimo",
+      gatewayProfileRef: "profile-mimo",
+    } satisfies ReviewProviderConfiguration;
+    renderReviewConfigForm({
+      config: {
+        ...safeDefaultReviewConfiguration,
+        provider,
+        providers: [provider],
+      },
+      repositoryFullName: "test/disposable-gateway",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+
+    const form = document.querySelector("form");
+    expect(form).not.toBeNull();
+    const serialized = readReviewConfigurationForm(new FormData(form!));
+    const normalized = { ...provider, model: provider.model.trim() };
+    expect(serialized.provider).toEqual(normalized);
+    expect(serialized.providers).toEqual([normalized]);
+    choose("Model", /^mimo-v2-pro$/);
+    expect(
+      readReviewConfigurationForm(new FormData(form!)).provider.reasoningEffort,
+    ).toBe("ultra");
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
+    expect(screen.getByRole("option", { name: /Max/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Ultra/ })).toBeTruthy();
+    expect(checkProviderRepositorySecretClientAction).not.toHaveBeenCalled();
+  });
+
+  it("round-trips a saved gateway selection without a GitHub secret probe and clears refs when switching auth", () => {
+    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
+      status: "missing",
+    });
+    const provider = {
+      kind: "codex",
+      authMode: "codex_account_gateway",
+      model: "mimo-v2-pro",
+      reasoningEffort: "xhigh",
+      agenticContext: true,
+      fastMode: false,
+      requiredHealthy: true,
+      gatewayBindingId: "binding-mimo",
+      gatewayProfileRef: "profile-mimo",
+    } satisfies ReviewProviderConfiguration;
+    renderReviewConfigForm({
+      config: {
+        ...safeDefaultReviewConfiguration,
+        provider,
+        providers: [provider],
+      },
+      repositoryFullName: "test/disposable-gateway",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+    const form = document.querySelector("form");
+    expect(form).not.toBeNull();
+    expect(
+      readReviewConfigurationForm(new FormData(form!)).provider,
+    ).toMatchObject({
+      authMode: "codex_account_gateway",
+      gatewayBindingId: "binding-mimo",
+      gatewayProfileRef: "profile-mimo",
+    });
+    expect(checkProviderRepositorySecretClientAction).not.toHaveBeenCalled();
+    expect(pageText()).toContain("Credentials stay on the server");
+    fireEvent.click(screen.getByRole("combobox", { name: "Provider auth" }));
+    fireEvent.click(
+      screen.getByRole("option", { name: /OpenRouter API key/i }),
+    );
+    const switched = readReviewConfigurationForm(new FormData(form!)).provider;
+    expect(switched.authMode).toBe("openrouter_api_key");
+    expect(switched.gatewayBindingId).toBeUndefined();
+    expect(switched.gatewayProfileRef).toBeUndefined();
+  });
+
   it("preserves configured investigation rollout values in dashboard submissions", () => {
     renderReviewConfigForm({
       config: {
@@ -804,6 +1205,7 @@ function renderReviewConfigForm(input?: {
       action={() => undefined}
       config={input?.config ?? safeDefaultReviewConfiguration}
       modelOptions={modelOptions}
+      gatewayAccounts={{ status: "ok", value: gatewayPage }}
       codexRotatingOAuthEnabled={input?.codexRotatingOAuthEnabled ?? true}
       claudeCodeProviderEnabled={input?.claudeCodeProviderEnabled ?? true}
       hiddenFields={[{ name: "workspaceId", value: "workspace_1" }]}

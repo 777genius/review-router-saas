@@ -2,6 +2,7 @@ import type { ProviderSecretScope } from "@reviewrouter/features-provider-setup"
 import type { ReviewRouterDiscussionMode } from "@reviewrouter/features-workflow-provisioning";
 import {
   parseReviewConfigurationStrict,
+  reviewProviderConfigurationSchema,
   type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
 import type { MemoryScope } from "@reviewrouter/features-memory";
@@ -28,7 +29,7 @@ export function readReviewConfigurationForm(
       `providerAuthMode.${index}`,
     );
 
-    return {
+    return reviewProviderConfigurationSchema.parse({
       kind: providerKindForAuthMode(authMode),
       authMode,
       model: readFormString(formData, `providerModel.${index}`),
@@ -44,7 +45,16 @@ export function readReviewConfigurationForm(
       requiredHealthy:
         readOptionalFormBoolean(formData, `providerRequiredHealthy.${index}`) ??
         index === 0,
-    } satisfies ReviewConfiguration["provider"];
+
+      gatewayBindingId:
+        readOptionalFormString(formData, `providerGatewayBindingId.${index}`) ??
+        undefined,
+      gatewayProfileRef:
+        readOptionalFormString(
+          formData,
+          `providerGatewayProfileRef.${index}`,
+        ) ?? undefined,
+    });
   });
 
   return parseReviewConfigurationStrict({

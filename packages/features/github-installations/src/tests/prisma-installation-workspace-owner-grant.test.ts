@@ -107,6 +107,21 @@ class FakeOwnerGrantPrisma {
 
       return null;
     },
+    findFirst: async (input: {
+      readonly where: {
+        readonly workspaceId: string;
+        readonly githubLogin: {
+          readonly equals: string;
+          readonly mode: "insensitive";
+        };
+      };
+    }) =>
+      [...this.members.values()].find(
+        (member) =>
+          member.workspaceId === input.where.workspaceId &&
+          member.githubLogin?.toLowerCase() ===
+            input.where.githubLogin.equals.toLowerCase(),
+      ) ?? null,
     delete: async (input: { readonly where: { readonly id: string } }) => {
       this.members.delete(input.where.id);
     },
@@ -181,6 +196,7 @@ class FakeOwnerGrantPrisma {
 }
 
 describe("PrismaInstallationWorkspaceOwnerGrant", () => {
+  // RED: first explicit enrollment creates duplicate owners on repeated delivery.
   it("keeps repeated installation owner grants idempotent", async () => {
     const prisma = new FakeOwnerGrantPrisma();
     prisma.seedInstallation({
@@ -212,7 +228,8 @@ describe("PrismaInstallationWorkspaceOwnerGrant", () => {
     ]);
   });
 
-  it("merges stale login-only rows before updating the user-linked owner row", async () => {
+  // RED: repeated explicit grants delete a legacy row and elevate a demoted User.
+  it("leaves ambiguous duplicate rows and a demoted stable member untouched", async () => {
     const prisma = new FakeOwnerGrantPrisma();
     prisma.seedInstallation({
       githubInstallationId: "129",
@@ -252,9 +269,66 @@ describe("PrismaInstallationWorkspaceOwnerGrant", () => {
         id: "member-by-user",
         workspaceId: "workspace-1",
         userId: "user-777",
+        githubLogin: "old-login",
+        role: "member",
+      },
+      {
+        id: "member-by-login",
+        workspaceId: "workspace-1",
+        userId: null,
         githubLogin: "777genius",
-        role: "owner",
+        role: "member",
       },
     ]);
+  });
+
+  // RED: explicit grants reassign a login-only/foreign member to the actor.
+  it("denies login-only and foreign identity collisions without membership changes", async () => {
+    for (const userId of [null, "other-user"]) {
+      const prisma = new FakeOwnerGrantPrisma();
+      prisma.seedInstallation({
+        githubInstallationId: "129",
+        workspaceId: "workspace-1",
+      });
+      const legacy: WorkspaceMemberRow = {
+        id: "legacy",
+        workspaceId: "workspace-1",
+        userId,
+        githubLogin: "777GENIUS",
+        role: "admin",
+      };
+      prisma.seedMember(legacy);
+      const grants = new PrismaInstallationWorkspaceOwnerGrant(prisma as never);
+      await expect(
+        grants.grantInstallationActorOwner({
+          githubInstallationId: "129",
+          githubUserId: "777",
+          githubLogin: "777genius",
+        }),
+      ).rejects.toThrow("installation_owner_grant_identity_ambiguous");
+      expect([...prisma.members.values()]).toEqual([legacy]);
+    }
+  });
+
+  // RED: repeated grants promote an existing admin/member even without collisions.
+  it("preserves actual roles on explicit repeated grants", async () => {
+    for (const role of ["admin", "member"] as const) {
+      const prisma = new FakeOwnerGrantPrisma();
+      prisma.seedInstallation({
+        githubInstallationId: "129",
+        workspaceId: "workspace-1",
+      });
+      const grants = new PrismaInstallationWorkspaceOwnerGrant(prisma as never);
+      const grant = {
+        githubInstallationId: "129",
+        githubUserId: "777",
+        githubLogin: "777genius",
+      };
+      await grants.grantInstallationActorOwner(grant);
+      const member = [...prisma.members.values()][0]!;
+      member.role = role;
+      await grants.grantInstallationActorOwner(grant);
+      expect([...prisma.members.values()]).toEqual([{ ...member, role }]);
+    }
   });
 });

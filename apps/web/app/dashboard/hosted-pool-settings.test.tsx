@@ -441,7 +441,7 @@ describe("HostedPoolSettingsPanel", () => {
     expectNoCredentialLeak();
   });
 
-  it("explains why Accounts is unavailable when the feature gate is off", () => {
+  it("scopes unavailable enrollment to the hosted ChatGPT pool", () => {
     renderPanel({
       gate: "feature_disabled",
       pool: null,
@@ -450,11 +450,11 @@ describe("HostedPoolSettingsPanel", () => {
     });
     expect(
       screen.getByRole("heading", {
-        name: "ChatGPT accounts are not enabled",
+        name: "Hosted ChatGPT pool is not enabled",
       }),
     ).toBeTruthy();
     expect(
-      screen.getByText(/nothing to manage on this page right now/i),
+      screen.getByText(/Manage gateway accounts in Workspace accounts above/i),
     ).toBeTruthy();
   });
 });

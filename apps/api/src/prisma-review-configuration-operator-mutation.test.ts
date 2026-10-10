@@ -7,6 +7,8 @@ import { describe, expect, it } from "vitest";
 import { PrismaReviewConfigurationOperatorMutation } from "./prisma-review-configuration-operator-mutation.js";
 
 type ProviderRow = {
+  gatewayBindingId: string | null;
+  gatewayProfileRef: string | null;
   providerKind: string;
   providerAuthMode: string;
   model: string;
@@ -18,6 +20,9 @@ type ProviderRow = {
 
 type VersionRow = {
   id: string;
+  workspaceId: string;
+  gatewayBindingId: string | null;
+  gatewayProfileRef: string | null;
   version: number;
   schemaVersion: number;
   providerKind: string;
@@ -44,7 +49,10 @@ type VersionRow = {
 
 type ConfigurationRow = {
   id: string;
+  workspaceId: string;
+  repositoryId: string | null;
   targetKey: string;
+  active: boolean;
   versions: VersionRow[];
 };
 
@@ -55,15 +63,26 @@ type State = {
   nextId: number;
 };
 
+function configurationKey(workspaceId: string, targetKey: string): string {
+  return JSON.stringify([workspaceId, targetKey]);
+}
+
+const repositoryKey = configurationKey("workspace_1", "repo:repo_1");
+
 function createPrismaStub() {
   let committed = createInitialState();
   let transactionFailures: unknown[] = [];
   let transactionCalls = 0;
+  const transactionOptions: { isolationLevel: string }[] = [];
   const events: string[] = [];
 
   const prisma = {
-    async $transaction<T>(callback: (transaction: unknown) => Promise<T>) {
+    async $transaction<T>(
+      callback: (transaction: unknown) => Promise<T>,
+      options: { isolationLevel: string },
+    ) {
       transactionCalls += 1;
+      transactionOptions.push(options);
       const failure = transactionFailures.shift();
       if (failure) throw failure;
       const transactionState = cloneState(committed);
@@ -78,13 +97,19 @@ function createPrismaStub() {
   return {
     prisma,
     events,
+    transactionOptions,
     state: () => committed,
     failNextAudit() {
       committed.failAudit = true;
     },
     replaceWorkspaceRevision(id: string) {
-      const workspace = committed.configurations.get("workspace:default")!;
+      const workspace = committed.configurations.get(
+        configurationKey("workspace_1", "workspace:default"),
+      )!;
       workspace.versions[0] = { ...workspace.versions[0]!, id };
+    },
+    clearRepositoryOverride() {
+      committed.configurations.get(repositoryKey)!.active = false;
     },
     queueTransactionFailure(error: unknown) {
       transactionFailures = [...transactionFailures, error];
@@ -97,10 +122,13 @@ function createInitialState(): State {
   return {
     configurations: new Map([
       [
-        "workspace:default",
+        configurationKey("workspace_1", "workspace:default"),
         {
           id: "config_workspace",
+          workspaceId: "workspace_1",
+          repositoryId: null,
           targetKey: "workspace:default",
+          active: true,
           versions: [versionRow("workspace_v1", 1, "xhigh")],
         },
       ],
@@ -140,34 +168,70 @@ function createTransactionClient(state: State, events: string[]) {
     reviewConfiguration: {
       async findUnique(input: {
         where: {
-          workspaceId_targetKey: { targetKey: string };
+          workspaceId_targetKey: { workspaceId: string; targetKey: string };
         };
       }) {
         events.push("read");
+        const { workspaceId, targetKey } = input.where.workspaceId_targetKey;
         const record = state.configurations.get(
-          input.where.workspaceId_targetKey.targetKey,
+          configurationKey(workspaceId, targetKey),
         );
         return record
-          ? { versions: record.versions.slice(-1).reverse() }
+          ? {
+              active: record.active,
+              versions: [...record.versions]
+                .sort((left, right) => right.version - left.version)
+                .slice(0, 1),
+            }
           : null;
       },
       async upsert(input: {
         where: {
-          workspaceId_targetKey: { targetKey: string };
+          workspaceId_targetKey: { workspaceId: string; targetKey: string };
+        };
+        update: { repositoryId: string | null };
+        create: {
+          workspaceId: string;
+          repositoryId: string | null;
+          targetKey: string;
         };
       }) {
         events.push("write");
-        const targetKey = input.where.workspaceId_targetKey.targetKey;
-        let record = state.configurations.get(targetKey);
+        const { workspaceId, targetKey } = input.where.workspaceId_targetKey;
+        const key = configurationKey(workspaceId, targetKey);
+        let record = state.configurations.get(key);
         if (!record) {
+          if (
+            input.create.workspaceId !== workspaceId ||
+            input.create.targetKey !== targetKey
+          )
+            throw new Error("fixture_configuration_scope_mismatch");
           record = {
             id: `config_${state.nextId++}`,
-            targetKey,
+            ...input.create,
+            // Prisma's persisted default for a newly created override.
+            active: true,
             versions: [],
           };
-          state.configurations.set(targetKey, record);
-        }
-        return { id: record.id };
+          state.configurations.set(key, record);
+        } else Object.assign(record, input.update);
+        return {
+          id: record.id,
+          workspaceId: record.workspaceId,
+          active: record.active,
+        };
+      },
+      async update(input: {
+        where: { id: string };
+        data: { active: boolean };
+      }) {
+        const record = [...state.configurations.values()].find(
+          (configuration) => configuration.id === input.where.id,
+        );
+        if (!record) throw new Error("fixture_configuration_not_found");
+        record.active = input.data.active;
+        events.push("reactivate");
+        return { ...record };
       },
       async deleteMany() {
         return { count: 0 };
@@ -178,7 +242,9 @@ function createTransactionClient(state: State, events: string[]) {
         const record = [...state.configurations.values()].find(
           (configuration) => configuration.id === input.where.configurationId,
         );
-        const latest = record?.versions.at(-1);
+        const latest = [...(record?.versions ?? [])].sort(
+          (left, right) => right.version - left.version,
+        )[0];
         return latest ? { version: latest.version } : null;
       },
       async create(input: {
@@ -190,6 +256,8 @@ function createTransactionClient(state: State, events: string[]) {
         const record = [...state.configurations.values()].find(
           (configuration) => configuration.id === input.data.configurationId,
         )!;
+        if (record.workspaceId !== input.data.workspaceId)
+          throw new Error("fixture_version_workspace_mismatch");
         const created = {
           ...input.data,
           id: `version_${state.nextId++}`,
@@ -219,6 +287,9 @@ function versionRow(
   const provider = safeDefaultReviewConfiguration.provider;
   return {
     id,
+    workspaceId: "workspace_1",
+    gatewayBindingId: null,
+    gatewayProfileRef: null,
     version,
     schemaVersion: 2,
     providerKind: provider.kind,
@@ -244,6 +315,8 @@ function versionRow(
     investigationProductionEffectsEnabled: false,
     providers: [
       {
+        gatewayBindingId: null,
+        gatewayProfileRef: null,
         providerKind: provider.kind,
         providerAuthMode: provider.authMode,
         model: provider.model,
@@ -309,10 +382,10 @@ describe("Prisma review configuration operator mutation", () => {
       config: { provider: { reasoningEffort: "high" } },
     });
     expect(
-      stub.state().configurations.get("repo:repo_1")?.versions,
+      stub.state().configurations.get(repositoryKey)?.versions,
     ).toHaveLength(1);
     expect(
-      stub.state().configurations.get("repo:repo_1")?.versions[0],
+      stub.state().configurations.get(repositoryKey)?.versions[0],
     ).toMatchObject({
       investigationRecordingEnabled: true,
       investigationShadowEnabled: true,
@@ -331,6 +404,36 @@ describe("Prisma review configuration operator mutation", () => {
     expect(stub.events.filter((event) => event === "exclusive")).toHaveLength(
       1,
     );
+    expect(stub.transactionOptions).toEqual([
+      { isolationLevel: "Serializable" },
+    ]);
+    const override = stub.state().configurations.get(repositoryKey)!;
+    expect(override).toMatchObject({
+      workspaceId: "workspace_1",
+      repositoryId: "repo_1",
+      active: true,
+    });
+    expect(result.revisionToken).toBe(`db:${override.versions[0]!.id}`);
+    await expect(mutation.commit(mutationInput())).rejects.toBeInstanceOf(
+      ReviewConfigurationWriteConflictError,
+    );
+    expect(
+      stub.state().configurations.get(repositoryKey)?.versions,
+    ).toHaveLength(1);
+    expect(stub.state().audits).toHaveLength(1);
+
+    // Clearing retains history; a CAS-valid inherited write reactivates it.
+    stub.clearRepositoryOverride();
+    const reactivated = await mutation.commit(mutationInput());
+    expect(reactivated.version).toBe(2);
+    expect(stub.state().configurations.get(repositoryKey)).toMatchObject({
+      active: true,
+      versions: [override.versions[0], expect.objectContaining({ version: 2 })],
+    });
+    expect(stub.events.filter((event) => event === "reactivate")).toHaveLength(
+      1,
+    );
+    expect(stub.state().audits).toHaveLength(2);
   });
 
   it("rejects a stale inherited revision without creating an override", async () => {
@@ -343,7 +446,20 @@ describe("Prisma review configuration operator mutation", () => {
     await expect(mutation.commit(mutationInput())).rejects.toBeInstanceOf(
       ReviewConfigurationWriteConflictError,
     );
-    expect(stub.state().configurations.has("repo:repo_1")).toBe(false);
+    expect(stub.state().configurations.has(repositoryKey)).toBe(false);
+    expect(stub.state().audits).toEqual([]);
+    const foreignWorkspace = mutationInput();
+    foreignWorkspace.target.workspaceId = "workspace_2";
+    foreignWorkspace.auditEvent.workspaceId = "workspace_2";
+    foreignWorkspace.expectedRevisionToken = "db:workspace_v2";
+    await expect(mutation.commit(foreignWorkspace)).rejects.toBeInstanceOf(
+      ReviewConfigurationWriteConflictError,
+    );
+    expect(
+      stub
+        .state()
+        .configurations.has(configurationKey("workspace_2", "repo:repo_1")),
+    ).toBe(false);
     expect(stub.state().audits).toEqual([]);
   });
 
@@ -357,8 +473,11 @@ describe("Prisma review configuration operator mutation", () => {
     await expect(mutation.commit(mutationInput())).rejects.toThrow(
       "audit_store_failed",
     );
-    expect(stub.state().configurations.has("repo:repo_1")).toBe(false);
+    expect(stub.state().configurations.has(repositoryKey)).toBe(false);
     expect(stub.state().audits).toEqual([]);
+    expect(stub.transactionOptions).toEqual([
+      { isolationLevel: "Serializable" },
+    ]);
   });
 
   it("retries a serialization conflict without duplicating state", async () => {
@@ -372,8 +491,12 @@ describe("Prisma review configuration operator mutation", () => {
       version: 1,
     });
     expect(stub.transactionCalls()).toBe(2);
+    expect(stub.transactionOptions).toEqual([
+      { isolationLevel: "Serializable" },
+      { isolationLevel: "Serializable" },
+    ]);
     expect(
-      stub.state().configurations.get("repo:repo_1")?.versions,
+      stub.state().configurations.get(repositoryKey)?.versions,
     ).toHaveLength(1);
     expect(stub.state().audits).toHaveLength(1);
   });

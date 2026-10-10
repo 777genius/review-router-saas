@@ -6,6 +6,27 @@ import {
 } from "./dashboard-action-form-readers";
 
 describe("dashboard action form readers", () => {
+  it("preserves explicit gateway binding and profile references in policy submissions", () => {
+    const formData = reviewConfigFormData([
+      {
+        authMode: "codex_account_gateway",
+        model: "mimo-v2-pro",
+        reasoningEffort: "xhigh",
+      },
+    ]);
+    formData.set("providerGatewayBindingId.0", "binding-mimo");
+    formData.set("providerGatewayProfileRef.0", "profile-mimo");
+    expect(readReviewConfigurationForm(formData).provider).toMatchObject({
+      kind: "codex",
+      authMode: "codex_account_gateway",
+      model: "mimo-v2-pro",
+      gatewayBindingId: "binding-mimo",
+      gatewayProfileRef: "profile-mimo",
+    });
+    formData.delete("providerGatewayBindingId.0");
+    expect(() => readReviewConfigurationForm(formData)).toThrow();
+  });
+
   it("normalizes stale legacy Codex policy submissions to rotating Codex without dropping hybrid providers", () => {
     const formData = reviewConfigFormData([
       {

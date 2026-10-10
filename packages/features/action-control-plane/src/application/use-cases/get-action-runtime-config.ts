@@ -9,6 +9,7 @@ import type { Clock } from "@reviewrouter/shared";
 import { codexWorkflowPathForRepository } from "@reviewrouter/features-codex-oauth-rotating";
 import {
   buildActionConflictReviewRuntimeConfig,
+  isManagedV2SessionBootstrapSource,
   managedInteractionWorkflowPath,
   validateActionSessionAgainstRepository,
   type ActionSessionClaims,
@@ -97,6 +98,16 @@ export async function getActionRuntimeConfig(
   }
   const version = record?.version ?? 1;
   const runtimeEnv = mapConfigToRuntimeEnv(config);
+  const primaryProvider = config.providers[0]!;
+  if (primaryProvider.authMode === "codex_account_gateway") {
+    // The existing plan emits auth/model settings but only validates references.
+    // Carry those references in the extensible nonsecret config environment.
+    // Safe saved selection only. Admission still resolves live server authority.
+    runtimeEnv.REVIEW_ROUTER_GATEWAY_BINDING_ID =
+      primaryProvider.gatewayBindingId;
+    runtimeEnv.REVIEW_ROUTER_GATEWAY_PROFILE_REF =
+      primaryProvider.gatewayProfileRef;
+  }
   const conflictReviewRuntimeConfig =
     session.reviewKind === "conflict-head"
       ? buildActionConflictReviewRuntimeConfig(session, {
@@ -147,7 +158,7 @@ export async function getActionRuntimeConfig(
     agenticContext: provider.agenticContext,
     fastMode: provider.fastMode,
     requiredHealthy: provider.requiredHealthy,
-    secretBackedProviderEnabled: true,
+    secretBackedProviderEnabled: provider.authMode !== "codex_account_gateway",
   }));
 
   return {
@@ -196,6 +207,34 @@ function assertStandardRuntimeProviderSupport(
     fullName: string;
   }>,
 ): void {
+  const gatewayProvider = config.providers.find(
+    (provider) => provider.authMode === "codex_account_gateway",
+  );
+  if (gatewayProvider) {
+    // Keep conflict consumers on their existing adapters. A gateway selection
+    // cannot authorize a legacy workflow or a different event/runtime kind.
+    if (
+      session.reviewKind === "conflict-head" ||
+      !session.workflowPath ||
+      !isManagedV2SessionBootstrapSource({
+        eventName: session.eventName,
+        workflowPath: session.workflowPath,
+        githubRepositoryId: repository.githubRepositoryId,
+        repositoryFullName: repository.fullName,
+      })
+    ) {
+      throw new Error("codex_provider_requires_rotating_workflow");
+    }
+    // The effective auth mode is primary-only and downstream admission owns
+    // one gateway profile. Mixed providers could select static credentials.
+    if (config.providers.length !== 1) {
+      throw new Error("codex_gateway_single_provider_required");
+    }
+    // Reuse the saved configuration validator; never accept client selectors,
+    // secret-shaped references or an incompatible provider kind as authority.
+    parseReviewConfigurationStrict(config);
+    return;
+  }
   const codexProvider = config.providers.find(
     (provider) => provider.kind === "codex",
   );

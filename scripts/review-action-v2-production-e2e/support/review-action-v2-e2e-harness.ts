@@ -137,6 +137,7 @@ export type ReviewActionV2E2EFlow = Readonly<{
 
 export type ReviewActionV2E2EAuthorization = Readonly<{
   sourceRunAttempt?: string;
+  oidcExpiresAt?: string;
   authorizationId: string;
   authorizationToken: string;
   reviewRevisionHash: string;
@@ -150,6 +151,8 @@ export type ReviewActionV2E2EInvestigationProfile = Readonly<{
 }>;
 
 export type ReviewActionV2E2EHarnessOptions = Readonly<{
+  /** Shorten only the synthetic mint, without changing server run authority. */
+  oidcLifetimeSeconds?: number;
   investigationProfile?: ReviewActionV2E2EInvestigationProfile;
   environmentOverrides?: Readonly<Record<string, string>>;
   investigationEmergencyValue?: () => string;
@@ -175,6 +178,7 @@ export class ReviewActionV2E2EHarness {
   private readonly worker: ReturnType<typeof createReviewV2WorkerFeature>;
   private readonly originalFetch: typeof globalThis.fetch;
   private oidcOrdinal = 0;
+  private readonly oidcLifetimeSeconds: number;
 
   private constructor(input: {
     readonly prisma: PrismaClient;
@@ -190,6 +194,7 @@ export class ReviewActionV2E2EHarness {
     readonly routes: ReturnType<typeof composeReviewActionV2ProductionRoutes>;
     readonly worker: ReturnType<typeof createReviewV2WorkerFeature>;
     readonly originalFetch: typeof globalThis.fetch;
+    readonly oidcLifetimeSeconds: number;
   }) {
     this.prisma = input.prisma;
     this.fakeGitHub = input.fakeGitHub;
@@ -204,6 +209,7 @@ export class ReviewActionV2E2EHarness {
     this.routes = input.routes;
     this.worker = input.worker;
     this.originalFetch = input.originalFetch;
+    this.oidcLifetimeSeconds = input.oidcLifetimeSeconds;
   }
 
   static async create(
@@ -211,6 +217,13 @@ export class ReviewActionV2E2EHarness {
     options: ReviewActionV2E2EHarnessOptions = {},
   ): Promise<ReviewActionV2E2EHarness> {
     assertDisposableDatabaseUrl(databaseUrl);
+    const oidcLifetimeSeconds = options.oidcLifetimeSeconds ?? 600;
+    if (
+      !Number.isSafeInteger(oidcLifetimeSeconds) ||
+      oidcLifetimeSeconds < 1 ||
+      oidcLifetimeSeconds > 600
+    )
+      throw new Error("review_v2_e2e_oidc_lifetime_invalid");
     const prisma = createPrismaClient({ databaseUrl, poolMax: 12 });
     const prefix = `review-v2-e2e-${randomUUID()}`;
     const workspaceId = `${prefix}-workspace`;
@@ -344,6 +357,7 @@ export class ReviewActionV2E2EHarness {
         routes,
         worker,
         originalFetch,
+        oidcLifetimeSeconds,
       });
     } catch (error) {
       globalThis.fetch = originalFetch;
@@ -361,7 +375,9 @@ export class ReviewActionV2E2EHarness {
     input: { readonly sourceRunAttempt?: string } = {},
   ): Promise<ReviewActionV2E2EAuthorization> {
     const runAttempt = input.sourceRunAttempt ?? "1";
-    const oidcToken = await this.signOidcToken(runAttempt);
+    const oidcExpiresAt =
+      Math.floor(Date.now() / 1000) + this.oidcLifetimeSeconds;
+    const oidcToken = await this.signOidcToken(runAttempt, oidcExpiresAt);
     const request: ReviewRunAuthorizeRequest = {
       ...envelope(`${this.prefix}-authorize-${runAttempt}`),
       oidcToken,
@@ -387,6 +403,7 @@ export class ReviewActionV2E2EHarness {
     );
     return {
       sourceRunAttempt: runAttempt,
+      oidcExpiresAt: new Date(oidcExpiresAt * 1000).toISOString(),
       authorizationId,
       authorizationToken,
       reviewRevisionHash: requiredString(facts.reviewRevisionHash),
@@ -1376,7 +1393,14 @@ export class ReviewActionV2E2EHarness {
     });
   }
 
-  private async signOidcToken(runAttempt: string): Promise<string> {
+  get generatedOidcTokenCount(): number {
+    return this.oidcOrdinal;
+  }
+
+  private async signOidcToken(
+    runAttempt: string,
+    expiresAt: number,
+  ): Promise<string> {
     this.oidcOrdinal += 1;
     const keyPair = oidcSigningKeys.get(this.fakeGitHub.options.oidcKeyId);
     if (!keyPair) throw new Error("review_v2_e2e_oidc_signing_key_missing");
@@ -1403,7 +1427,7 @@ export class ReviewActionV2E2EHarness {
       .setIssuer("https://token.actions.githubusercontent.com")
       .setAudience(requiredString(this.env.REVIEW_ROUTER_ACTION_OIDC_AUDIENCE))
       .setIssuedAt()
-      .setExpirationTime("10m")
+      .setExpirationTime(expiresAt)
       .sign(keyPair.privateKey);
   }
 

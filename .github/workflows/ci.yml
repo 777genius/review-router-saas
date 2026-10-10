@@ -306,8 +306,93 @@ jobs:
           push: false
           provenance: false
 
-  quality:
+  managed-migration-pg17:
+    name: Managed migration PG17 (${{ matrix.lane }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - lane: prerequisites
+            utc: ""
+          - lane: recovery-utc-false
+            utc: "false"
+          - lane: recovery-utc-true
+            utc: "true"
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5433/review_router_ci_test?schema=public
+      REVIEW_ROUTER_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5433/review_router_ci_test?schema=public
+      REVIEW_ROUTER_REQUIRE_HANDOFF_PG17: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates curl
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
+
+      - name: Install dependencies
+        run: node scripts/install-private-dependencies.mjs --frozen-lockfile
+
+      - name: Generate Prisma client
+        env:
+          REVIEW_ROUTER_REQUIRE_OFFLINE_PRISMA: "1"
+        run: node scripts/generate-prisma-offline.mjs
+
+      - name: Review Action v2 protocol drift check
+        run: pnpm protocol:check
+
+      - name: Pull pinned offline fixture image
+        run: docker pull postgres:17.10@sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317
+
+      - name: Managed migration PG17 prerequisites (no skips)
+        if: ${{ matrix.lane == 'prerequisites' }}
+        run: pnpm exec vitest run scripts/render-schema-handoff-repair.pg17.real.test.ts scripts/render-retained-exclusion.pg17.real.test.ts scripts/render-managed-workflow-cutover.pg17.real.test.ts scripts/render-historical89-inplace.pg17.real.test.ts scripts/render-historical89-custody.pg17.real.test.ts scripts/render-historical89-prerequisite-capture.pg17.real.test.ts scripts/render-historical89-already96.pg17.real.test.ts
+
+      - name: Historical89 PG17 recovery (no skips)
+        if: ${{ matrix.lane != 'prerequisites' }}
+        env:
+          REVIEW_ROUTER_HANDOFF_RECOVERY_DATABASE_UTC: ${{ matrix.utc }}
+        run: pnpm exec vitest run scripts/render-historical89-recovery.pg17.real.test.ts
+
+  quality-gates:
     name: Quality Gates
+    needs: [quality, managed-migration-pg17]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enforce every quality and PG17 lane
+        shell: bash
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          MANAGED_PG17_RESULT: ${{ needs.managed-migration-pg17.result }}
+        run: |
+          set -euo pipefail
+          test "$QUALITY_RESULT" = success
+          test "$MANAGED_PG17_RESULT" = success
+
+  quality:
+    name: Quality Checks
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 75
     env:
@@ -378,12 +463,9 @@ jobs:
       - name: Review Action v2 protocol drift check
         run: pnpm protocol:check
 
-      - name: Managed migration PG17 prerequisites (no skips)
-        env:
-          REVIEW_ROUTER_REQUIRE_HANDOFF_PG17: "1"
-        run: |
-          docker pull postgres:17.10@sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317
-          pnpm exec vitest run scripts/render-schema-handoff-repair.pg17.real.test.ts scripts/render-retained-exclusion.pg17.real.test.ts scripts/render-managed-workflow-cutover.pg17.real.test.ts scripts/render-historical89-inplace.pg17.real.test.ts scripts/render-historical89-custody.pg17.real.test.ts scripts/render-historical89-prerequisite-capture.pg17.real.test.ts scripts/render-historical89-recovery.pg17.real.test.ts scripts/render-historical89-already96.pg17.real.test.ts
+      # Later offline role/schema fixtures also require this image on this runner.
+      - name: Pull pinned offline fixture image
+        run: docker pull postgres:17.10@sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317
 
       - name: Review Action v2 handoff contract tests
         run: pnpm protocol:handoff:test

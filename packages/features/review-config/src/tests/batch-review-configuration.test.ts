@@ -109,6 +109,7 @@ describe("PrismaReviewConfigurationRepository batch reads", () => {
         repositoryId: {
           in: ["repository_2", "repository_missing"],
         },
+        active: true,
       },
       orderBy: { repositoryId: "asc" },
       select: {

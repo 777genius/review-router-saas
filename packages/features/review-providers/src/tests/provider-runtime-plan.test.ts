@@ -320,3 +320,44 @@ describe("provider runtime plan", () => {
     ).toThrow("provider_model_required");
   });
 });
+
+// Detects treating a gateway profile as a new agent or exporting selection as authority.
+it("plans a gateway model with safe settings only, without fallback or credentials", () => {
+  const plan = buildProviderRuntimePlan({
+    ...baseInput,
+    providers: [
+      {
+        kind: "codex",
+        authMode: "codex_account_gateway",
+        model: "mimo-v2-pro",
+        gatewayBindingId: "binding-safe",
+        gatewayProfileRef: "profile-mimo",
+        reasoningEffort: "high",
+        agenticContext: false,
+        fastMode: true,
+      },
+    ],
+  });
+  expect(plan.primaryRuntimeAuthMode).toBe("codex-account-gateway");
+  expect(plan.providerIds).toEqual(["codex/mimo-v2-pro"]);
+  expect(plan.requiredSecretNames).toEqual([]);
+  expect(plan.requiredCliTools).toEqual(["codex"]);
+  expect(plan.runtimeEnv).toEqual({
+    REVIEWROUTER_CONFIG_SCHEMA_VERSION: "2",
+    REVIEW_AUTH_MODE: "codex-account-gateway",
+    REVIEW_PROVIDERS: "codex/mimo-v2-pro",
+    REQUIRED_HEALTHY_PROVIDERS: "codex/mimo-v2-pro",
+    SYNTHESIS_MODEL: "codex/mimo-v2-pro",
+    PROVIDER_LIMIT: "1",
+    PROVIDER_MAX_PARALLEL: "1",
+    INLINE_MIN_AGREEMENT: "1",
+    INLINE_MAX_COMMENTS: "50",
+    INLINE_MIN_SEVERITY: "minor",
+    TARGET_TOKENS_PER_BATCH: "50000",
+    FAIL_ON_SEVERITY: "critical",
+    CODEX_MODEL: "mimo-v2-pro",
+    CODEX_REASONING_EFFORT: "high",
+    CODEX_AGENTIC_CONTEXT: "false",
+    CODEX_FAST_MODE: "true",
+  });
+});

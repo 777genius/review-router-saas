@@ -42,6 +42,12 @@ let prisma: PrismaClient;
 const currentWorkspaceIds = new Set<string>();
 const limitsProfileId = "limits-contract";
 const sloProfileId = "slo-contract";
+// This suite intentionally runs against the historical through-000079 schema.
+// Current Prisma must not select a column first introduced by SQL120.
+const historicalAuthorizationOmit = {
+  runtimeSnapshotCanonicalJson: true,
+  gatewayExecutionCanonicalJson: true,
+} as const;
 
 if (databaseUrl) {
   beforeAll(async () => {
@@ -717,6 +723,7 @@ if (databaseUrl) {
         },
       });
       await prisma.reviewRunAuthorization.update({
+        omit: historicalAuthorizationOmit,
         where: { authorizationId: harness.authorizationId },
         data: {
           state: "expired",
@@ -1393,6 +1400,7 @@ async function createHarness(
 
   await prisma.workspace.create({
     data: { id: workspaceId, slug: workspaceId, name: workspaceId },
+    select: { id: true },
   });
   await prisma.scmRepositoryIdentity.create({
     data: {
@@ -1443,6 +1451,7 @@ async function createHarness(
     },
   });
   await prisma.reviewRunAuthorization.create({
+    omit: historicalAuthorizationOmit,
     data: {
       authorizationId,
       workspaceId,
@@ -1556,11 +1565,13 @@ async function createPullRequestHarness(
   pullRequestNumber: number,
 ): Promise<ReviewExecutionStoreContractHarness> {
   const source = await prisma.reviewRunAuthorization.findUniqueOrThrow({
+    omit: historicalAuthorizationOmit,
     where: { authorizationId: base.authorizationId },
   });
   const suffix = randomUUID();
   const authorizationId = `execution-authorization-${suffix}`;
   await prisma.reviewRunAuthorization.create({
+    omit: historicalAuthorizationOmit,
     data: {
       ...source,
       authorizationId,
@@ -1802,7 +1813,10 @@ async function cleanupScope(workspaceId: string): Promise<void> {
       });
     }
   }
-  await prisma.workspace.delete({ where: { id: workspaceId } });
+  await prisma.workspace.delete({
+    where: { id: workspaceId },
+    select: { id: true },
+  });
 }
 
 function hash(index: number): string {

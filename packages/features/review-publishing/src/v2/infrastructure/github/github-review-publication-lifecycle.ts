@@ -59,6 +59,7 @@ type ReviewComment = {
   readonly viewerDidAuthor?: boolean | null;
   readonly author?: {
     readonly login?: string | null;
+    readonly __typename?: string | null;
   } | null;
 };
 
@@ -67,6 +68,7 @@ type IssueComment = {
   readonly viewerDidAuthor?: boolean | null;
   readonly author?: {
     readonly login?: string | null;
+    readonly __typename?: string | null;
   } | null;
 };
 
@@ -107,7 +109,7 @@ query ReviewRouterPublicationLifecycle(
             pageInfo { hasNextPage endCursor }
             nodes {
               id body createdAt publishedAt updatedAt lastEditedAt viewerDidAuthor
-              author { login }
+              author { login __typename }
             }
           }
         }
@@ -127,7 +129,7 @@ query ReviewRouterPublicationLifecycleComments(
         pageInfo { hasNextPage endCursor }
         nodes {
           id body createdAt publishedAt updatedAt lastEditedAt viewerDidAuthor
-          author { login }
+          author { login __typename }
         }
       }
     }
@@ -146,7 +148,7 @@ query ReviewRouterPublicationCommandLedger(
       headRefOid
       comments(first: 100, after: $commentsAfter) {
         pageInfo { hasNextPage endCursor }
-        nodes { body viewerDidAuthor author { login } }
+        nodes { body viewerDidAuthor author { login __typename } }
       }
     }
   }
@@ -517,7 +519,12 @@ function isTrustedGitHubCommentAuthor(
   if (login === null) {
     throw new Error(`${field}_author_invalid`);
   }
-  return trustedAuthors.has(login);
+  return (
+    trustedAuthors.has(login) ||
+    (comment.author?.__typename === "Bot" &&
+      !login.endsWith("[bot]") &&
+      trustedAuthors.has(`${login}[bot]`))
+  );
 }
 
 function canonicalGitHubLogin(value: string | null | undefined): string | null {

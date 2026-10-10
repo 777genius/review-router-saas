@@ -50,7 +50,22 @@ export class PrismaReviewRunAuthorizationRepository
     ReviewRunAuthorizationCommandPort,
     ReviewRunAuthorizationAdmissionCommandPort
 {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly runtimeSnapshotFence?: (
+      transaction: Prisma.TransactionClient,
+      candidate: ReviewRunAuthorizationCandidate,
+    ) => Promise<boolean>,
+  ) {}
+
+  async findReviewRunAuthorizationForAdmission(
+    input: import("../../application/ports/review-run-authorization-ports").ReviewRunAuthorizationAdmissionLookup,
+  ): Promise<ReviewRunAuthorization | null> {
+    const row = await this.prisma.reviewRunAuthorization.findFirst({
+      where: input,
+    });
+    return row ? reviewRunAuthorizationToDomain(row) : null;
+  }
 
   async findReviewRunAuthorizationById(
     authorizationId: string,
@@ -64,6 +79,9 @@ export class PrismaReviewRunAuthorizationRepository
   async createOrRestoreReviewRunAuthorization(
     candidate: ReviewRunAuthorizationCandidate,
   ) {
+    if (candidate.runtimeSnapshotCanonicalJson) {
+      throw new Error("review_run_runtime_snapshot_requires_atomic_admission");
+    }
     return this.prisma.$transaction((transaction) =>
       createOrRestoreWithinTransaction(transaction, candidate, false),
     );
@@ -86,6 +104,15 @@ export class PrismaReviewRunAuthorizationRepository
               );
             }
             return replay;
+          }
+          if (
+            input.candidate.runtimeSnapshotCanonicalJson &&
+            (!this.runtimeSnapshotFence ||
+              !(await this.runtimeSnapshotFence(transaction, input.candidate)))
+          ) {
+            return {
+              status: ReviewRunAuthorizationCreateStatus.EligibilityChanged,
+            };
           }
           if (
             !(await admissionFenceMatches(
@@ -393,7 +420,6 @@ async function createOrRestoreWithinTransaction(
       workspaceId: candidate.workspaceId,
       repositoryConnectionId: candidate.repositoryConnectionId,
       scmRepositoryIdentityId: candidate.scmRepositoryIdentityId,
-      pullRequestNumber: candidate.pullRequestNumber,
       sourceRunId: candidate.sourceRunId,
       sourceRunAttempt: candidate.sourceRunAttempt,
     },
@@ -434,6 +460,13 @@ async function lockAuthorizationIdentity(
     `id:${candidate.authorizationId}`,
     `replay:${candidate.oidcReplayKeyHash}`,
     `run:${reviewRunAttemptKey(candidate)}`,
+    `runtime:${canonicalJson([
+      candidate.workspaceId,
+      candidate.repositoryConnectionId,
+      candidate.scmRepositoryIdentityId,
+      candidate.sourceRunId,
+      candidate.sourceRunAttempt,
+    ])}`,
   ]);
 }
 
@@ -444,7 +477,31 @@ async function findReplayResult(
   const replayOwner = await transaction.reviewRunAuthorization.findUnique({
     where: { oidcReplayKeyHash: candidate.oidcReplayKeyHash },
   });
-  if (!replayOwner) return null;
+  if (!replayOwner) {
+    if (!candidate.runtimeSnapshotCanonicalJson) return null;
+    const runOwner = await transaction.reviewRunAuthorization.findFirst({
+      where: {
+        workspaceId: candidate.workspaceId,
+        repositoryConnectionId: candidate.repositoryConnectionId,
+        scmRepositoryIdentityId: candidate.scmRepositoryIdentityId,
+        sourceRunId: candidate.sourceRunId,
+        sourceRunAttempt: candidate.sourceRunAttempt,
+        protocolOfferHash: candidate.protocolOfferHash,
+      },
+    });
+    if (!runOwner?.runtimeSnapshotCanonicalJson) return null;
+    const original = reviewRunAuthorizationToDomain(runOwner);
+    return reviewRunAuthorizationImmutableKey(original) ===
+      reviewRunAuthorizationImmutableKey({
+        ...candidate,
+        oidcReplayKeyHash: original.oidcReplayKeyHash,
+      })
+      ? {
+          status: ReviewRunAuthorizationCreateStatus.Restored,
+          authorization: original,
+        }
+      : { status: ReviewRunAuthorizationCreateStatus.ReplayConflict };
+  }
   const existing = reviewRunAuthorizationToDomain(replayOwner);
   return reviewRunAuthorizationImmutableKey(existing) ===
     reviewRunAuthorizationImmutableKey(candidate)

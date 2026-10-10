@@ -36,6 +36,7 @@ import {
   pruneCodexRotatingChildEnv,
   readCodexRotatingWorkflowSourceMetadata,
   renderCodexRotatingAdvisoryWorkflow,
+  renderCanonicalAccountGatewayWorkflow,
   renderCodexRotatingInstallerCommand,
   scanCodexRotatingAdvisoryWorkflow,
   validateCodexAuthJsonBytes,
@@ -1688,4 +1689,66 @@ it("keeps certified-fork schema 6 rendering disabled", () => {
       workflowSchemaVersion: 6,
     }),
   ).toThrow("codex_rotating_t0_workflow_schema_unsupported");
+});
+
+describe("account-gateway source metadata", () => {
+  it("retains exact keyless source metadata without legacy session or namespace evidence", () => {
+    const sha = "a".repeat(40);
+    const source = renderCanonicalAccountGatewayWorkflow({
+      actionRef: `777genius/review-router@${sha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      githubRepositoryId: "123456",
+    });
+    const metadata = readCodexRotatingWorkflowSourceMetadata(source);
+    expect(metadata).toEqual({
+      actionRef: `777genius/review-router@${sha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:123456",
+      workflowSchemaVersion: 2,
+      codexSessionMode: "account-gateway",
+      runtimeConfigMode: "oidc",
+      runtimeRef: sha,
+    });
+    expect(readCanonicalCodexRotatingT0WorkflowSourceMetadata(source)).toEqual(
+      metadata,
+    );
+    // Narrowing verifies the gateway metadata contract during the feature typecheck.
+    if (metadata.codexSessionMode === "account-gateway") {
+      const schema: CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2 =
+        metadata.workflowSchemaVersion;
+      const config: "oidc" = metadata.runtimeConfigMode;
+      const secret: undefined = metadata.secretNamespace;
+      expect([schema, config, secret]).toEqual([2, "oidc", undefined]);
+    }
+  });
+
+  it("keeps secret-bearing schema-2 mode distinct and rejects explicit session-mode injection", () => {
+    const legacy = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${"a".repeat(40)}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:123456",
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      workflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+      refreshScheduleCron: null,
+    });
+    expect(scanCodexRotatingAdvisoryWorkflow(legacy)).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(legacy),
+    ).not.toHaveProperty("codexSessionMode");
+    for (const mode of ["account-gateway", "unknown"]) {
+      const injected = legacy.replace(
+        "    with:\n",
+        `    with:\n      codex_session_mode: ${mode}\n`,
+      );
+      expect(scanCodexRotatingAdvisoryWorkflow(injected).valid).toBe(false);
+      expect(() => readCodexRotatingWorkflowSourceMetadata(injected)).toThrow();
+      expect(() =>
+        readCanonicalCodexRotatingT0WorkflowSourceMetadata(injected),
+      ).toThrow();
+    }
+  });
 });

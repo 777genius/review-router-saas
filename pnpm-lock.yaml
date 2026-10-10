@@ -165,6 +165,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@agent-teams/account-gateway':
+        specifier: file:../../vendor/account-gateway/agent-teams-account-gateway-0.1.0-e8c9216.tgz
+        version: file:vendor/account-gateway/agent-teams-account-gateway-0.1.0-e8c9216.tgz
       '@octokit/app':
         specifier: ^16.1.2
         version: 16.1.2
@@ -210,6 +213,9 @@ importers:
       '@reviewrouter/features-outbox':
         specifier: workspace:*
         version: link:../../packages/features/outbox
+      '@reviewrouter/features-provider-accounts':
+        specifier: workspace:*
+        version: link:../../packages/features/provider-accounts
       '@reviewrouter/features-rate-limits':
         specifier: workspace:*
         version: link:../../packages/features/rate-limits
@@ -295,6 +301,9 @@ importers:
         specifier: 0.4.1
         version: 0.4.1
     dependencies:
+      '@agent-teams/account-gateway':
+        specifier: file:../../vendor/account-gateway/agent-teams-account-gateway-0.1.0-e8c9216.tgz
+        version: file:vendor/account-gateway/agent-teams-account-gateway-0.1.0-e8c9216.tgz
       '@octokit/app':
         specifier: ^16.1.2
         version: 16.1.2
@@ -334,6 +343,9 @@ importers:
       '@reviewrouter/features-outbox':
         specifier: workspace:*
         version: link:../../packages/features/outbox
+      '@reviewrouter/features-provider-accounts':
+        specifier: workspace:*
+        version: link:../../packages/features/provider-accounts
       '@reviewrouter/features-provider-setup':
         specifier: workspace:*
         version: link:../../packages/features/provider-setup
@@ -753,6 +765,25 @@ importers:
         specifier: workspace:*
         version: link:../../platform/db
 
+  packages/features/provider-accounts:
+    dependencies:
+      '@prisma/client':
+        specifier: 7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/features-auth':
+        specifier: workspace:*
+        version: link:../auth
+    devDependencies:
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
+      '@prisma/adapter-pg':
+        specifier: 7.8.0
+        version: 7.8.0
+      pg:
+        specifier: 8.23.0
+        version: 8.23.0
+
   packages/features/provider-setup:
     dependencies:
       '@reviewrouter/features-codex-oauth-rotating':
@@ -830,6 +861,16 @@ importers:
       zod:
         specifier: ^4.4.2
         version: 4.4.2
+    devDependencies:
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
+      '@prisma/adapter-pg':
+        specifier: 7.8.0
+        version: 7.8.0
+      pg:
+        specifier: 8.23.0
+        version: 8.23.0
 
   packages/features/review-context-attestation:
     dependencies:
@@ -1071,6 +1112,26 @@ importers:
         version: 3.2.2(tailwind-merge@3.5.0)(tailwindcss@4.2.4)
 
 packages:
+
+  '@agent-teams/account-gateway@file:vendor/account-gateway/agent-teams-account-gateway-0.1.0-e8c9216.tgz':
+    resolution: {integrity: sha512-O5gTDFvTPqAkaGP6VxRzCle0z4itlEJUD/L6lkf5x1+t3TnOClKr7nusvHaq3X4BC+PyXfLn6egW9fA1jQKCIQ==, tarball: file:vendor/account-gateway/agent-teams-account-gateway-0.1.0-e8c9216.tgz}
+    version: 0.1.0
+    engines: {node: '>=24.21.0 <25 || >=26.10.0 <27'}
+
+  '@get-modular/assembly@0.2.0':
+    resolution: {integrity: sha512-xZTgfMUzHnA8DR7wk/3mAdLppTlwAsm6pfW5bgoW6lvGh8hYGBJwcwzbdynJduRVBVW7aFmchsrLTP5w4rcmlw==}
+    engines: {node: '>=24.18.0 <25 || >=26.10.0 <27'}
+
+  '@get-modular/core@0.2.0':
+    resolution: {integrity: sha512-npn2dAR5TuVobDzuI7MRZS0p6/0qzTWbRbPo5y9EaDz4qFtBNF6+YBhU92QPwOkYzVjo9xAJtIgMkly7wlkdWw==}
+    engines: {node: '>=24.18.0 <25 || >=26.10.0 <27'}
+
+  zod@4.6.5:
+    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
+
+  '@types/pg@8.23.1':
+    resolution: {integrity: sha512-fKVHpikPdg4GKks3JuLEhvwSyvwzF23hnabPy6DD8ljVbC7+6J5dQzdv4arV6jqq57djnMgs1HKBxX4P8aBI3A==}
+
 
   '@alloc/quick-lru@5.2.0':
     resolution: {integrity: sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw==}
@@ -5126,6 +5187,27 @@ packages:
     engines: {node: '>= 10.0.0'}
 
 snapshots:
+
+  '@agent-teams/account-gateway@file:vendor/account-gateway/agent-teams-account-gateway-0.1.0-e8c9216.tgz':
+    dependencies:
+      '@get-modular/assembly': 0.2.0
+      '@get-modular/core': 0.2.0
+      zod: 4.6.5
+
+  '@get-modular/assembly@0.2.0':
+    dependencies:
+      '@get-modular/core': 0.2.0
+
+  '@get-modular/core@0.2.0': {}
+
+  zod@4.6.5: {}
+
+  '@types/pg@8.23.1':
+    dependencies:
+      '@types/node': 22.20.1
+      pg-protocol: 1.16.0
+      pg-types: 2.2.0
+
 
   '@alloc/quick-lru@5.2.0': {}
 

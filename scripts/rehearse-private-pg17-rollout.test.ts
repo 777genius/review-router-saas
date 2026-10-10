@@ -1274,29 +1274,104 @@ describe("disposable dual-version rehearsal", () => {
     const historicalCheckout = migrationNames.filter(
       (name) => name !== "000125_hosted_codex_device_reconnect",
     );
-    const previousCheckout = historicalCheckout.filter(
-      (name) => name !== "000116_hosted_codex_relay_admission_utc",
+    const withoutProviderKey = historicalCheckout.filter(
+      (name) => name !== "000110_provider_api_key_workspace_management",
+    );
+    const previousCheckout = withoutProviderKey.filter(
+      (name) =>
+        name !== "000117_provider_accounts" &&
+        name !== "000118_workspace_binding_fences" &&
+        name !== "000119_review_configuration_gateway_binding" &&
+        name !== "000120_review_run_runtime_snapshot" &&
+        name !== "000121_review_run_gateway_execution_binding" &&
+        name !== "000122_review_configuration_operation_receipt" &&
+        name !== "000123_personal_workspace_identity" &&
+        name !== "000124_personal_account_operations",
     );
     expect(previousCheckout).toHaveLength(115);
+    expect(migrationManifestIdentity(previousCheckout)).toBe(
+      "sha256:30f68ffc62e0b46815bc007339d83aa7894b61b23f301c012b8990713cc0ad14",
+    );
     expect(() =>
       resolvePreReleaseMigrationExclusions(previousCheckout),
     ).toThrow("private_pg17_rehearsal_migration_boundary_unclassified");
-    expect(migrationNames).toHaveLength(117);
-    expect(migrationManifestIdentity(migrationNames)).toBe(
-      "sha256:1cdcfc995996a4e90864741ffaf11b43540eb491cf1bcdad158a05c6609364b3",
-    );
-    expect(historicalCheckout).toHaveLength(116);
-    expect(migrationManifestIdentity(historicalCheckout)).toBe(
-      "sha256:495a040aeb13c5fc43ea611546be10c9e5edcf519c67bc1f5e40d797f6c50538",
-    );
     expect(
       migrationManifestIdentity(
-        historicalCheckout.filter(
-          (name) => name !== "000110_provider_api_key_workspace_management",
+        withoutProviderKey.filter(
+          (name) =>
+            name !== "000118_workspace_binding_fences" &&
+            name !== "000119_review_configuration_gateway_binding" &&
+            name !== "000120_review_run_runtime_snapshot" &&
+            name !== "000121_review_run_gateway_execution_binding" &&
+            name !== "000122_review_configuration_operation_receipt" &&
+            name !== "000123_personal_workspace_identity" &&
+            name !== "000124_personal_account_operations",
         ),
       ),
     ).toBe(
-      "sha256:30f68ffc62e0b46815bc007339d83aa7894b61b23f301c012b8990713cc0ad14",
+      "sha256:c5c0618f105799d06d21424433cec4a59fc052e63f594c2aace0657ebb52d1dd",
+    );
+    expect(withoutProviderKey).toHaveLength(123);
+    expect(migrationManifestIdentity(withoutProviderKey)).toBe(
+      "sha256:f26da08b44ad6830f4486f93ed33979acda7b5669a8550601c34dbf9c0322443",
+    );
+    expect(
+      migrationManifestIdentity(
+        migrationNames.filter(
+          (name) =>
+            previousCheckout.includes(name) ||
+            name === "000110_provider_api_key_workspace_management",
+        ),
+      ),
+    ).toBe(
+      "sha256:495a040aeb13c5fc43ea611546be10c9e5edcf519c67bc1f5e40d797f6c50538",
+    );
+    expect(migrationNames).toHaveLength(125);
+    expect(migrationManifestIdentity(migrationNames)).toBe(
+      "sha256:fcd4d6ea3f95504edfd4485185ccfd4b139349509083cf67d188786dd57d97ae",
+    );
+    expect(historicalCheckout).toHaveLength(124);
+    expect(migrationManifestIdentity(historicalCheckout)).toBe(
+      "sha256:f9d5fc4e689c9373e0b1a56e8e41aa71af2d247bb55227ca4394b13a5d52b398",
+    );
+    expect(
+      migrationManifestIdentity(
+        withoutProviderKey.filter(
+          (name) => name !== "000124_personal_account_operations",
+        ),
+      ),
+    ).toBe(
+      "sha256:5629630be035cbf1677692e840bc07c7292729bfb5bfc0c242f38179f3230df4",
+    );
+    expect(
+      migrationManifestIdentity(
+        withoutProviderKey.filter(
+          (name) =>
+            name !== "000122_review_configuration_operation_receipt" &&
+            name !== "000123_personal_workspace_identity" &&
+            name !== "000124_personal_account_operations",
+        ),
+      ),
+    ).toBe(
+      "sha256:5f01c4416620cf984ffa5fee8dbb26bcf171ae3a89ec4e4b8615e4c7c8461c64",
+    );
+    expect(
+      migrationManifestIdentity(
+        withoutProviderKey.filter(
+          (name) =>
+            name !== "000123_personal_workspace_identity" &&
+            name !== "000124_personal_account_operations",
+        ),
+      ),
+    ).toBe(
+      "sha256:858537d185e32ef6258ddf674b5a201e6cc0c4e44fa948a18af23d6dd55905ec",
+    );
+    const receiptSql = readFileSync(
+      "packages/platform/db/prisma/migrations/000122_review_configuration_operation_receipt/migration.sql",
+    );
+    expect(receiptSql).toHaveLength(997);
+    expect(createHash("sha256").update(receiptSql).digest("hex")).toBe(
+      "89f9f4eadeb88733adddb051bca5e50bdc86bbb06e45905d3bdf18eedbd1386e",
     );
 
     expect(exclusions).toEqual([
@@ -1340,6 +1415,14 @@ describe("disposable dual-version rehearsal", () => {
       "000114_sdk_growth_v3_tool_artifact",
       "000115_sdk_growth_v3_approved_manifest",
       "000116_hosted_codex_relay_admission_utc",
+      "000117_provider_accounts",
+      "000118_workspace_binding_fences",
+      "000119_review_configuration_gateway_binding",
+      "000120_review_run_runtime_snapshot",
+      "000121_review_run_gateway_execution_binding",
+      "000122_review_configuration_operation_receipt",
+      "000123_personal_workspace_identity",
+      "000124_personal_account_operations",
       "000125_hosted_codex_device_reconnect",
     ]);
     expect(exclusions).not.toContain("000067_review_live_progress");
@@ -1397,7 +1480,15 @@ describe("disposable dual-version rehearsal", () => {
             name !== "000113_sdk_growth_approval_ledger" &&
             name !== "000114_sdk_growth_v3_tool_artifact" &&
             name !== "000115_sdk_growth_v3_approved_manifest" &&
-            name !== "000116_hosted_codex_relay_admission_utc",
+            name !== "000116_hosted_codex_relay_admission_utc" &&
+            name !== "000117_provider_accounts" &&
+            name !== "000118_workspace_binding_fences" &&
+            name !== "000119_review_configuration_gateway_binding" &&
+            name !== "000120_review_run_runtime_snapshot" &&
+            name !== "000121_review_run_gateway_execution_binding" &&
+            name !== "000122_review_configuration_operation_receipt" &&
+            name !== "000123_personal_workspace_identity" &&
+            name !== "000124_personal_account_operations",
           "000102_sdk_growth_current_authority",
         ),
       ),
@@ -1427,7 +1518,15 @@ describe("disposable dual-version rehearsal", () => {
             name !== "000113_sdk_growth_approval_ledger" &&
             name !== "000114_sdk_growth_v3_tool_artifact" &&
             name !== "000115_sdk_growth_v3_approved_manifest" &&
-            name !== "000116_hosted_codex_relay_admission_utc",
+            name !== "000116_hosted_codex_relay_admission_utc" &&
+            name !== "000117_provider_accounts" &&
+            name !== "000118_workspace_binding_fences" &&
+            name !== "000119_review_configuration_gateway_binding" &&
+            name !== "000120_review_run_runtime_snapshot" &&
+            name !== "000121_review_run_gateway_execution_binding" &&
+            name !== "000122_review_configuration_operation_receipt" &&
+            name !== "000123_personal_workspace_identity" &&
+            name !== "000124_personal_account_operations",
           "000102_sdk_growth_current_authority",
         ),
       ),
@@ -1449,14 +1548,26 @@ describe("disposable dual-version rehearsal", () => {
   });
   it("rejects missing, duplicate, renamed, and arbitrary future boundary entries", () => {
     const names = readdirSync("packages/platform/db/prisma/migrations");
-    const exactTail = "000116_hosted_codex_relay_admission_utc";
+    const exactTail = "000121_review_run_gateway_execution_binding";
     const currentTail = "000125_hosted_codex_device_reconnect";
     for (const candidate of [
       names.filter((name) => name !== currentTail),
       [...names, currentTail],
       names.map((name) => (name === currentTail ? "000125_relabelled" : name)),
       [...names, "000125_future_migration"],
+      names.filter(
+        (name) => name !== "000122_review_configuration_operation_receipt",
+      ),
+      [...names, "000122_review_configuration_operation_receipt"],
       names.filter((name) => name !== exactTail),
+      names.filter(
+        (name) => name !== "000119_review_configuration_gateway_binding",
+      ),
+      names.filter((name) => name !== "000117_provider_accounts"),
+      names.filter(
+        (name) => name !== "000116_hosted_codex_relay_admission_utc",
+      ),
+      [...names, "000116_hosted_codex_relay_admission_utc"],
       [...names, exactTail],
       names.map((name) => (name === exactTail ? "000108_unknown" : name)),
       [...names, "000109_future_migration"],
@@ -1494,6 +1605,14 @@ describe("disposable dual-version rehearsal", () => {
     "000114_sdk_growth_v3_tool_artifact",
     "000115_sdk_growth_v3_approved_manifest",
     "000116_hosted_codex_relay_admission_utc",
+    "000117_provider_accounts",
+    "000118_workspace_binding_fences",
+    "000119_review_configuration_gateway_binding",
+    "000120_review_run_runtime_snapshot",
+    "000121_review_run_gateway_execution_binding",
+    "000122_review_configuration_operation_receipt",
+    "000123_personal_workspace_identity",
+    "000124_personal_account_operations",
     "000125_hosted_codex_device_reconnect",
   ])(
     "excludes %s only from the historical fixture and preserves current source bytes",
@@ -1542,6 +1661,14 @@ describe("disposable dual-version rehearsal", () => {
                 name !== "000114_sdk_growth_v3_tool_artifact" &&
                 name !== "000115_sdk_growth_v3_approved_manifest" &&
                 name !== "000116_hosted_codex_relay_admission_utc" &&
+                name !== "000117_provider_accounts" &&
+                name !== "000118_workspace_binding_fences" &&
+                name !== "000119_review_configuration_gateway_binding" &&
+                name !== "000120_review_run_runtime_snapshot" &&
+                name !== "000121_review_run_gateway_execution_binding" &&
+                name !== "000122_review_configuration_operation_receipt" &&
+                name !== "000123_personal_workspace_identity" &&
+                name !== "000124_personal_account_operations" &&
                 name !== "000125_hosted_codex_device_reconnect",
               "000102_sdk_growth_current_authority",
             ),

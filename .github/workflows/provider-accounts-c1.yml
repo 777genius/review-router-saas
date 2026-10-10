@@ -1,0 +1,79 @@
+name: Provider accounts C1
+
+on:
+  pull_request:
+    paths:
+      - packages/features/provider-accounts/**
+      - packages/features/auth/**
+      - packages/platform/db/**
+      - pnpm-lock.yaml
+      - .github/workflows/provider-accounts-c1.yml
+  push:
+    branches: [main]
+    paths:
+      - packages/features/provider-accounts/**
+      - packages/features/auth/**
+      - packages/platform/db/**
+      - pnpm-lock.yaml
+      - .github/workflows/provider-accounts-c1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-accounts-c1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17.10@sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317
+        env:
+          POSTGRES_USER: fixture_owner
+          POSTGRES_DB: rr_gateway_test_c1_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U fixture_owner -d rr_gateway_test_c1_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://fixture_owner@127.0.0.1:5432/rr_gateway_test_c1_ci
+      RR_PROVIDER_ACCOUNTS_PG_TEST_URL: postgresql://fixture_owner@127.0.0.1:5432/rr_gateway_test_c1_ci
+      RR_PROVIDER_ACCOUNTS_PG_TEST: "1"
+      RR_PROVIDER_ACCOUNTS_DISPOSABLE_CLUSTER: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.21.0
+      - name: Install pinned dependencies
+        run: |
+          npm install --global pnpm@10.33.0
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Generate and validate actual Prisma schema
+        run: |
+          pnpm --filter @reviewrouter/platform-db db:generate
+          pnpm --filter @reviewrouter/platform-db exec prisma validate --config prisma.config.ts
+      - name: Qualify source boundaries and feature
+        run: |
+          pnpm architecture:check
+          pnpm --filter @reviewrouter/features-provider-accounts typecheck
+          pnpm --filter @reviewrouter/features-provider-accounts build
+          pnpm --filter @reviewrouter/features-provider-accounts test
+      - name: Use the disposable PostgreSQL client's psql
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/provider-accounts-bin"
+          printf '#!/bin/sh\nexec docker exec -i "%s" psql "$@"\n' "$PG_CONTAINER_ID" > "$RUNNER_TEMP/provider-accounts-bin/psql"
+          chmod 755 "$RUNNER_TEMP/provider-accounts-bin/psql"
+          echo "$RUNNER_TEMP/provider-accounts-bin" >> "$GITHUB_PATH"
+      - name: Apply all historical migrations and verify real PostgreSQL contracts
+        run: pnpm --filter @reviewrouter/features-provider-accounts test:postgres

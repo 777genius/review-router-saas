@@ -34,7 +34,9 @@ describe("DashboardSectionTabs", () => {
     expect(
       screen.getByRole("tab", { name: /^Memory\s*In development$/i }),
     ).toBeTruthy();
-    const setupLink = screen.getByRole("tab", { name: /AccountsEncrypted/i });
+    const setupLink = screen.getByRole("tab", {
+      name: /AccountsWorkspace provider accounts/i,
+    });
     expect(setupLink.getAttribute("href")).toBe(
       "/dashboard/setup?workspace=acme",
     );

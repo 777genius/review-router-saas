@@ -38,11 +38,11 @@ export const dashboardSectionMeta: Record<
     navDescription: "In development",
   },
   setup: {
-    eyebrow: "ChatGPT",
+    eyebrow: "Workspace credentials",
     title: "Accounts",
     description:
-      "We encrypt ChatGPT sessions at rest. Stored sessions are never returned to the browser.",
-    navDescription: "Encrypted subscription accounts",
+      "Manage workspace API-key accounts and existing ChatGPT sessions. Credentials are never returned to the browser.",
+    navDescription: "Workspace provider accounts",
   },
   policy: {
     eyebrow: "Review behavior",

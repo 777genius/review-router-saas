@@ -1,4 +1,6 @@
+import { registerReviewRunGatewayCheckoutRoute } from "./review-run-gateway-checkout.js";
 import { assertUnreservedCheckIdentity } from "@reviewrouter/features-sdk-growth-authority";
+import { registerReviewRunGatewayRelayRoutes } from "./review-run-gateway-relay.js";
 import { createDefaultHostedPoolOperatorConnect } from "./hosted-pool-workflow-operator-composition.js";
 import {
   createHostedPoolOperatorComposition,
@@ -100,6 +102,7 @@ import {
   isConflictReviewFallbackAllowedForRepository,
   isConflictReviewFallbackEnabled,
   isCodexRotatingOAuthAllowedForRepository,
+  isCodexRotatingOAuthEnabled,
   readGitHubAppPrivateKey,
   requireReviewRouterDatabaseRecoveryWitness,
   resolveReviewRouterCodexRotatingActionRef,
@@ -267,12 +270,15 @@ export async function createApiApp(
     sdkGrowthAuthorityEnabled
       ? createPrismaClient()
       : undefined);
-  const codexEffectAuthorityDatabaseUrl =
-    resolveCodexOAuthDatabaseEffectAuthorityUrl({
-      env: reviewActionV2Env,
-      runtimeDatabaseUrl:
-        reviewActionV2Env.DATABASE_URL ?? process.env.DATABASE_URL,
-    });
+  const codexRotatingOAuthEnabled =
+    isCodexRotatingOAuthEnabled(reviewActionV2Env);
+  const codexEffectAuthorityDatabaseUrl = codexRotatingOAuthEnabled
+    ? resolveCodexOAuthDatabaseEffectAuthorityUrl({
+        env: reviewActionV2Env,
+        runtimeDatabaseUrl:
+          reviewActionV2Env.DATABASE_URL ?? process.env.DATABASE_URL,
+      })
+    : undefined;
   const codexEffectAuthorityPrisma = codexEffectAuthorityDatabaseUrl
     ? createPrismaClient({
         databaseUrl: codexEffectAuthorityDatabaseUrl,
@@ -485,8 +491,14 @@ export async function createApiApp(
             operatorCredentialSha256,
           ),
           repositories: new PrismaReviewConfigurationOperatorRepository(prisma),
-          configurations: new PrismaReviewConfigurationRepository(prisma),
-          mutations: new PrismaReviewConfigurationOperatorMutation(prisma),
+          configurations: new PrismaReviewConfigurationRepository(
+            prisma,
+            reviewActionV2Env.ACCOUNT_GATEWAY_OPERATOR_WORKSPACE_ID,
+          ),
+          mutations: new PrismaReviewConfigurationOperatorMutation(
+            prisma,
+            reviewActionV2Env.ACCOUNT_GATEWAY_OPERATOR_WORKSPACE_ID,
+          ),
           rateLimits: new ReviewConfigurationOperatorRateLimit(
             new PrismaRateLimitStore(prisma),
             clock,
@@ -575,8 +587,9 @@ export async function createApiApp(
             resolveReviewRouterCodexRotatingTrustedActionRefs(
               reviewActionV2Env,
             );
-          const databaseRecoveryWitness =
-            requireReviewRouterDatabaseRecoveryWitness(reviewActionV2Env);
+          const databaseRecoveryWitness = codexRotatingOAuthEnabled
+            ? requireReviewRouterDatabaseRecoveryWitness(reviewActionV2Env)
+            : undefined;
           const conflictPostingGatewayEnabled = Boolean(
             conflictReviewFallbackEnabled &&
             process.env.GITHUB_APP_ID &&
@@ -595,6 +608,7 @@ export async function createApiApp(
                 appSlug: process.env.GITHUB_APP_SLUG,
               })
             : undefined;
+          // Also verifies managed-V2 session bootstrap; independent of legacy OAuth.
           const codexRotatingGitHubSecretGateway =
             process.env.GITHUB_APP_ID && githubAppPrivateKey
               ? new OctokitCodexRotatingGitHubSecretGateway({
@@ -604,29 +618,31 @@ export async function createApiApp(
                   trustedActionRefs: codexRotatingTrustedActionRefs,
                 })
               : undefined;
-          if (codexRotatingGitHubSecretGateway && !codexEffectAuthorityPrisma) {
+          if (codexRotatingOAuthEnabled && !codexEffectAuthorityPrisma) {
             throw new Error(
               "codex_oauth_database_effect_authority_unavailable",
             );
           }
-          const codexRotatingOAuth = new PrismaCodexRotatingOAuthRepository(
+          const codexRotatingOAuth = codexRotatingOAuthEnabled
+            ? new PrismaCodexRotatingOAuthRepository(prisma, {
+                actionRef: codexRotatingActionRef,
+                allowedActionRefs: codexRotatingTrustedActionRefs,
+                actionOwnerRepo: resolveActionOwnerRepo(codexRotatingActionRef),
+                databaseRecoveryWitness: databaseRecoveryWitness!,
+                databaseEffectAuthority: codexEffectAuthorityPrisma!,
+              })
+            : undefined;
+          const hostedReviewStateAccess = new PrismaHostedReviewStateAccess(
             prisma,
-            {
-              actionRef: codexRotatingActionRef,
-              allowedActionRefs: codexRotatingTrustedActionRefs,
-              actionOwnerRepo: resolveActionOwnerRepo(codexRotatingActionRef),
-              databaseRecoveryWitness,
-              ...(codexEffectAuthorityPrisma
-                ? { databaseEffectAuthority: codexEffectAuthorityPrisma }
-                : {}),
-            },
           );
-          const reviewStateAccess = new CompositeReviewStateAccess(
-            codexRotatingOAuth,
-            new PrismaHostedReviewStateAccess(prisma),
-          );
+          const reviewStateAccess = codexRotatingOAuth
+            ? new CompositeReviewStateAccess(
+                codexRotatingOAuth,
+                hostedReviewStateAccess,
+              )
+            : hostedReviewStateAccess;
           const codexRotatingVersionedWriteback =
-            codexRotatingGitHubSecretGateway
+            codexRotatingOAuth && codexRotatingGitHubSecretGateway
               ? new CodexRotatingVersionedWritebackDispatcher(
                   codexRotatingOAuth,
                   codexRotatingGitHubSecretGateway,
@@ -701,7 +717,7 @@ export async function createApiApp(
                     }
                   : {}),
               }),
-            codexRotatingOAuth,
+            ...(codexRotatingOAuth ? { codexRotatingOAuth } : {}),
             codexRotatingReviewSnapshotAccess: reviewStateAccess,
             reviewSnapshots: new PrismaReviewSnapshotRepository(prisma),
             codexRotatingReviewExecutionCheckpointAccess: reviewStateAccess,
@@ -714,6 +730,7 @@ export async function createApiApp(
                 if (
                   !isCodexRotatingOAuthAllowedForRepository(
                     input.repositoryFullName,
+                    reviewActionV2Env,
                   )
                 ) {
                   throw new Error("codex_rotating_not_enabled");
@@ -722,9 +739,7 @@ export async function createApiApp(
             },
             codexRotatingMutationAdmission: {
               assertEnabled() {
-                if (
-                  process.env.REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH !== "1"
-                ) {
+                if (!codexRotatingOAuthEnabled) {
                   throw new Error("codex_rotating_not_enabled");
                 }
               },
@@ -733,28 +748,31 @@ export async function createApiApp(
               assertAdmitted(input: { readonly repositoryFullName: string }) {
                 assertCodexRotatingNewWorkAdmitted({
                   enabledValue:
-                    process.env
-                      .REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED,
+                    reviewActionV2Env.REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED,
                   approvedRepositories: normalizeApprovedRepositories(
                     parseCommaSeparatedEnv(
-                      process.env
-                        .REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES,
+                      reviewActionV2Env.REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES,
                     ),
                   ),
                   repositoryFullName: input.repositoryFullName,
                 });
               },
             },
-            ...(codexRotatingGitHubSecretGateway
+            ...(codexRotatingGitHubSecretGateway &&
+            codexRotatingVersionedWriteback
               ? {
                   codexRotatingSecretsReadTokens:
                     codexRotatingGitHubSecretGateway,
                   codexRotatingSecretWriter: codexRotatingGitHubSecretGateway,
                   codexRotatingVersionedWriteback:
-                    codexRotatingVersionedWriteback!,
+                    codexRotatingVersionedWriteback,
                   codexRotatingCheckoutTokens: codexRotatingGitHubSecretGateway,
                   codexRotatingWorkflowSourceVerifier:
                     codexRotatingGitHubSecretGateway,
+                }
+              : {}),
+            ...(codexRotatingGitHubSecretGateway
+              ? {
                   reviewIntentAdmissionRequired:
                     process.env
                       .REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED !==
@@ -790,7 +808,9 @@ export async function createApiApp(
                 }
               : {}),
             ledgerKeys: new HmacActionLedgerKey(ledgerSecret),
-            codexRotatingWritebackHmacKey: ledgerSecret,
+            ...(codexRotatingOAuth
+              ? { codexRotatingWritebackHmacKey: ledgerSecret }
+              : {}),
             reviewThreadLifecycleResolver:
               new PrismaGitHubUserReviewThreadResolver(prisma),
             ...(process.env.GITHUB_APP_ID && githubAppPrivateKey
@@ -900,6 +920,18 @@ export async function createApiApp(
 
   if (reviewRunControlV2Dependencies) {
     await registerReviewRunControlV2Routes(app, reviewRunControlV2Dependencies);
+  }
+  if (productionReviewActionV2Dependencies?.accountGatewayRelay) {
+    await registerReviewRunGatewayRelayRoutes(
+      app,
+      productionReviewActionV2Dependencies.accountGatewayRelay,
+    );
+  }
+  if (productionReviewActionV2Dependencies?.accountGatewayCheckout) {
+    await registerReviewRunGatewayCheckoutRoute(
+      app,
+      productionReviewActionV2Dependencies.accountGatewayCheckout,
+    );
   }
   await registerHostedV4ReadRoutes(
     app,

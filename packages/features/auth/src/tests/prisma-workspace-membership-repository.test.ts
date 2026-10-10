@@ -4,16 +4,25 @@ import type { AuthenticatedPrincipal } from "../domain/authenticated-principal";
 import { PrismaWorkspaceMembershipRepository } from "../infrastructure/prisma/prisma-workspace-membership-repository";
 
 function createPrismaMock() {
-  return {
+  const tx = {
+    $queryRaw: vi.fn().mockResolvedValue([{ id: "user_1" }]),
     workspace: {
-      upsert: vi.fn().mockResolvedValue({
+      findUnique: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockImplementation(async ({ data }) => ({
         id: "workspace_1",
-        slug: "workspace-slug",
-      }),
+        ...data,
+      })),
+      update: vi.fn(),
     },
     workspaceMember: {
-      upsert: vi.fn().mockResolvedValue({}),
+      upsert: vi.fn().mockResolvedValue({ role: "owner" }),
     },
+    gitHubInstallation: { findMany: vi.fn().mockResolvedValue([]) },
+  };
+  return {
+    ...tx,
+    $transaction: async <T>(callback: (value: typeof tx) => Promise<T>) =>
+      callback(tx),
   };
 }
 
@@ -34,43 +43,70 @@ function principal(
 }
 
 describe("PrismaWorkspaceMembershipRepository", () => {
-  it("preserves the legacy GitHub personal workspace slug", async () => {
-    const prisma = createPrismaMock();
-    const repository = new PrismaWorkspaceMembershipRepository(
-      prisma as unknown as PrismaClient,
-    );
-
-    await repository.ensurePersonalWorkspaceOwner(principal({}));
-
-    expect(prisma.workspace.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { slug: "gh-user-123" },
-        create: expect.objectContaining({ slug: "gh-user-123" }),
-      }),
-    );
+  // RED: external-derived upsert adopts legacy scopes and gives two logins two P.
+  // Real SQL serialization/uniqueness is covered in postgres-fences.ts.
+  it("creates a fresh opaque stable-User workspace for either provider", async () => {
+    for (const provider of ["github", "gitlab"] as const) {
+      const prisma = createPrismaMock();
+      const repository = new PrismaWorkspaceMembershipRepository(
+        prisma as unknown as PrismaClient,
+      );
+      const result = await repository.ensurePersonalWorkspaceOwner(
+        principal({ provider }),
+      );
+      expect(result).toEqual({
+        workspaceId: "workspace_1",
+        workspaceSlug: expect.stringMatching(/^personal-[0-9a-f-]{36}$/),
+        role: "owner",
+        source: "personal",
+      });
+      expect(prisma.workspace.create).toHaveBeenCalledWith({
+        data: {
+          personalOwnerUserId: "user_1",
+          slug: result.workspaceSlug,
+          name: "@maintainer",
+        },
+      });
+    }
   });
 
-  it("uses provider-prefixed personal workspace slugs for GitLab identities", async () => {
+  // RED: trusting an unpersisted principal creates an unowned scope.
+  it("rejects a missing persisted User before workspace creation", async () => {
     const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([]);
     const repository = new PrismaWorkspaceMembershipRepository(
       prisma as unknown as PrismaClient,
     );
+    await expect(
+      repository.ensurePersonalWorkspaceOwner(principal({})),
+    ).rejects.toThrow("personal_workspace_user_not_found");
+    expect(prisma.workspace.create).not.toHaveBeenCalled();
+    expect(prisma.workspaceMember.upsert).not.toHaveBeenCalled();
+  });
 
-    await repository.ensurePersonalWorkspaceOwner(
-      principal({
-        provider: "gitlab",
-        externalUserId: "456",
-        login: "gitlab-maintainer",
-        githubUserId: null,
-        githubLogin: null,
-      }),
+  // RED: refresh forces a demoted personal membership back to owner.
+  it("returns the persisted membership role on repeated provision", async () => {
+    const prisma = createPrismaMock();
+    prisma.workspace.findUnique.mockResolvedValue({
+      id: "workspace_1",
+      slug: "opaque-existing",
+    });
+    prisma.workspace.update.mockResolvedValue({
+      id: "workspace_1",
+      slug: "opaque-existing",
+    });
+    prisma.workspaceMember.upsert.mockResolvedValue({ role: "member" });
+    const repository = new PrismaWorkspaceMembershipRepository(
+      prisma as unknown as PrismaClient,
     );
-
-    expect(prisma.workspace.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { slug: "gitlab-user-456" },
-        create: expect.objectContaining({ slug: "gitlab-user-456" }),
-      }),
-    );
+    expect(
+      await repository.ensurePersonalWorkspaceOwner(principal({})),
+    ).toEqual({
+      workspaceId: "workspace_1",
+      workspaceSlug: "opaque-existing",
+      role: "member",
+      source: "personal",
+    });
+    expect(prisma.workspace.create).not.toHaveBeenCalled();
   });
 });

@@ -41,6 +41,7 @@ import {
   StartReviewExecutionStatus,
   canonicalReviewAssignmentManifestHashPreimage,
   canonicalReviewExecutionPlanHashPreimage,
+  decideLeaseAcquire,
   type ReviewExecutionSnapshot,
   type FinalizedReviewProjectionArtifact,
   type InvocationFlight,
@@ -704,6 +705,90 @@ describe("Review Action v2 execution/evidence composition", () => {
       }),
     );
     expect(issueLease).not.toHaveBeenCalled();
+  });
+
+  it("acquires a valid lease when authorization has less than the initial lease duration left", async () => {
+    const delayedNow = new Date(now.getTime() + 1_000);
+    const delayedSnapshot = {
+      ...snapshot,
+      execution: {
+        ...snapshot.execution,
+        executionDeadlineAt: new Date(now.getTime() + 6 * 60 * 60 * 1_000),
+      },
+    };
+    let acquiredLease: ReviewInvocationLease | undefined;
+    const acquire = vi.fn<
+      ReviewActionV2ExecutionHandlerDependencies["executions"]["invocationFlights"]["execute"]
+    >(async (command) => {
+      const decision = decideLeaseAcquire({
+        ...command,
+        stream: delayedSnapshot.stream,
+        execution: delayedSnapshot.execution,
+        activeLease: null,
+        fencingToken: 1n,
+      });
+      if (!("lease" in decision)) throw new Error("test_lease_not_acquired");
+      acquiredLease = decision.lease;
+      return {
+        status: AcquireOrJoinInvocationFlightStatus.OwnerAcquired,
+        flight: invocationFlight(acquiredLease),
+      };
+    });
+    const dependencies = executionDependencies({
+      now: () => delayedNow,
+      findExecution: vi.fn(async () => delayedSnapshot),
+      findLease: vi.fn(async () => acquiredLease ?? null),
+      acquire,
+      leaseSafety: vi.fn(async () => ({
+        allowed: true,
+        decisionHash: hash("6"),
+      })),
+    });
+    const d: ReviewActionV2ExecutionHandlerDependencies = {
+      ...dependencies,
+      timing: { ...dependencies.timing, initialLeaseDurationMs: 600_000 },
+      protocolLimits: {
+        ...dependencies.protocolLimits,
+        findProtocolLimitsProfileById: vi.fn(async () => ({
+          ...protocolLimits,
+          maxLeaseDurationMs: 600_000,
+          maxResultReportDurationMs: 1_200_000,
+        })),
+      },
+    };
+    const prepared = manifest();
+    const identity = await buildProviderInvocationIdentity(digest, {
+      manifest: prepared,
+      providerVoteIdentityHash: hash("c"),
+    });
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvocationLeaseAcquire,
+      {
+        ...envelope("acquire-short-authorization"),
+        authorizationToken: "authorization-token",
+        idempotencyKey: "acquire-short-authorization",
+        requestBodyHash: hash("0"),
+        executionId: delayedSnapshot.execution.executionId,
+        workSlotId: "slot-1",
+        purpose: ReviewInvocationLeasePurpose.ProviderExecution,
+        manifestCanonicalJson:
+          serializeProviderInvocationManifestCanonicalWireJson(prepared),
+        manifestKey: identity.manifestKey,
+        providerVoteIdentityHash: hash("c"),
+        providerInvocationKey: identity.providerInvocationKey,
+        acquireRequestId: "acquire-short-authorization",
+        ownerIdHash: hash("d"),
+      } satisfies ReviewInvocationLeaseAcquireRequest,
+    );
+
+    await expect(
+      createReviewActionV2ExecutionHandlers(d).acquireLease.execute(request),
+    ).resolves.toMatchObject({ statusCode: 201 });
+    expect(acquiredLease?.expiresAt).toEqual(authorization.expiresAt);
+    expect(acquiredLease?.resultReportUntil).toEqual(authorization.expiresAt);
+    expect(acquiredLease?.expiresAt.getTime()).toBeGreaterThan(
+      delayedNow.getTime(),
+    );
   });
 
   it("returns busy for an exact-revision join without issuing owner capability", async () => {

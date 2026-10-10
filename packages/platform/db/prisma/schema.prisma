@@ -13,6 +13,14 @@ model Workspace {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Stable identity only; personal account management/use remains disabled.
+  personalOwnerUserId String? @unique
+  personalOwnerUser User? @relation("PersonalWorkspaceOwner", fields: [personalOwnerUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  ownedProviderAccountConnections ProviderAccountConnection[] @relation("WorkspaceProviderAccountOwner")
+  accountBindings WorkspaceAccountBinding[]
+  personalAccountOperationScopes PersonalAccountOperation[] @relation("PersonalOperationScope")
+  personalAccountOperationTargets PersonalAccountOperation[] @relation("PersonalOperationTarget")
+
   members                      WorkspaceMember[]
   installations                GitHubInstallation[]
   gitLabInstallations          GitLabInstallation[]
@@ -56,8 +64,121 @@ model User {
   repositoryPermissionCaches RepositoryPermissionCache[]
   memoryItems                MemoryItem[]
   memorySuggestions          MemorySuggestion[]
+  personalWorkspaces Workspace? @relation("PersonalWorkspaceOwner")
+  ownedProviderAccountConnections ProviderAccountConnection[] @relation("UserProviderAccountOwner")
+  personalAccountOperations PersonalAccountOperation[]
 
   @@index([githubLogin])
+}
+
+// Product ownership and safe gateway status only; credentials stay in the gateway.
+model ProviderAccountConnection {
+  id String @id @default(cuid())
+  ownerUserId String?
+  ownerWorkspaceId String?
+  gatewayAccountRef String @unique
+  gatewayOperationRef String?
+  profileRef String?
+  displayName String
+  state ProviderAccountConnectionState @default(unknown)
+  metadataRevision Int @default(1)
+  authorizationEpochMirror BigInt?
+  pendingSourceOperationId String? @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ownerUser User? @relation("UserProviderAccountOwner", fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  ownerWorkspace Workspace? @relation("WorkspaceProviderAccountOwner", fields: [ownerWorkspaceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  bindings WorkspaceAccountBinding[]
+  pendingSourceOperation PersonalAccountOperation? @relation("PendingPersonalOperation", fields: [pendingSourceOperationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  personalOperationIntents PersonalAccountOperation[] @relation("PersonalOperationSource")
+  personalOperationResults PersonalAccountOperation[] @relation("PersonalOperationResultSource")
+
+  @@index([ownerUserId])
+  @@index([ownerWorkspaceId, state])
+}
+
+model WorkspaceAccountBinding {
+  id String @id @default(cuid())
+  workspaceId String
+  connectionId String
+  state WorkspaceAccountBindingState
+  revision Int @default(1)
+  policyRevision Int @default(1)
+  pendingFenceOperationId String?
+  pendingFencePolicySubject String?
+  pendingFencePolicyRevision Int?
+  fenceAckOperationId String?
+  fenceAckPolicyRevision Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  connection ProviderAccountConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  personalOperationPredecessors PersonalAccountOperation[] @relation("PersonalOperationPredecessor")
+  personalOperationSelectors PersonalAccountOperation[] @relation("PersonalOperationBinding")
+  personalOperationResults PersonalAccountOperation[] @relation("PersonalOperationResultBinding")
+
+  reviewConfigurationVersions ReviewConfigurationVersion[] @relation("PrimaryGatewayBinding")
+  reviewConfigurationProviders ReviewConfigurationVersionProvider[] @relation("OrderedGatewayBinding")
+
+  // Active pair uniqueness is a partial SQL index in 000124. Retired IDs remain.
+  @@index([workspaceId, connectionId, state])
+  // Configuration pointers enforce the workspace through a composite FK.
+  @@unique([id, workspaceId])
+}
+
+// Safe, finite disabled personal operations. No credential or arbitrary payload.
+model PersonalAccountOperation {
+  id String @id
+  actorUserId String
+  clientOperationId String
+  action String
+  personalWorkspaceId String
+  proposedSourceId String? @unique // Reservation scalar: the source does not exist yet.
+  sourceId String?
+  targetWorkspaceId String?
+  profileId String?
+  displayName String?
+  ingress String?
+  normalizedIntentHash String
+  expectedSourceMetadataRevision Int?
+  expectedGatewayRevision BigInt?
+  predecessorBindingId String?
+  expectedPredecessorRevision Int?
+  bindingId String?
+  expectedBindingRevision Int?
+  resultSourceId String?
+  resultBindingId String?
+  phase String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  actor User @relation(fields: [actorUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  personalWorkspace Workspace @relation("PersonalOperationScope", fields: [personalWorkspaceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  targetWorkspace Workspace? @relation("PersonalOperationTarget", fields: [targetWorkspaceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  source ProviderAccountConnection? @relation("PersonalOperationSource", fields: [sourceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  resultSource ProviderAccountConnection? @relation("PersonalOperationResultSource", fields: [resultSourceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  predecessor WorkspaceAccountBinding? @relation("PersonalOperationPredecessor", fields: [predecessorBindingId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  binding WorkspaceAccountBinding? @relation("PersonalOperationBinding", fields: [bindingId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  resultBinding WorkspaceAccountBinding? @relation("PersonalOperationResultBinding", fields: [resultBindingId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  pendingSources ProviderAccountConnection[] @relation("PendingPersonalOperation")
+
+  @@unique([actorUserId, clientOperationId])
+}
+
+enum ProviderAccountConnectionState {
+  active
+  disabled
+  quarantined
+  pending
+  unknown
+}
+
+enum WorkspaceAccountBindingState {
+  active
+  revoked
 }
 
 model UserExternalIdentity {
@@ -298,20 +419,27 @@ model ReviewConfiguration {
   workspaceId  String
   repositoryId String?
   targetKey    String
+  active       Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   workspace  Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  repository RepositoryConnection?        @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  repository RepositoryConnection?        @relation(fields: [repositoryId, workspaceId], references: [id, workspaceId], onDelete: Cascade, onUpdate: Restrict)
   versions   ReviewConfigurationVersion[]
 
   @@unique([workspaceId, targetKey])
+  @@unique([id, workspaceId])
   @@index([workspaceId, repositoryId])
 }
 
 model ReviewConfigurationVersion {
   id                                      String   @id @default(cuid())
   configurationId                         String
+  operationId                             String?
+  operationIntentHash                     String?
+  workspaceId                             String
+  gatewayBindingId                        String?
+  gatewayProfileRef                       String?
   version                                 Int
   schemaVersion                           Int      @default(1)
   providerKind                            String
@@ -335,16 +463,23 @@ model ReviewConfigurationVersion {
   investigationProductionEffectsEnabled   Boolean  @default(false)
   createdAt                               DateTime @default(now())
 
-  configuration ReviewConfiguration                  @relation(fields: [configurationId], references: [id], onDelete: Cascade)
+  configuration ReviewConfiguration @relation(fields: [configurationId, workspaceId], references: [id, workspaceId], onDelete: Cascade, onUpdate: Restrict)
+  gatewayBinding WorkspaceAccountBinding? @relation("PrimaryGatewayBinding", fields: [gatewayBindingId, workspaceId], references: [id, workspaceId], onDelete: Restrict, onUpdate: Restrict)
   providers     ReviewConfigurationVersionProvider[]
 
+  @@unique([id, workspaceId])
+  @@index([gatewayBindingId, workspaceId])
   @@unique([configurationId, version])
+  @@unique([configurationId, operationId])
   @@index([configurationId, createdAt])
 }
 
 model ReviewConfigurationVersionProvider {
   id                     String  @id @default(cuid())
   configurationVersionId String
+  workspaceId            String
+  gatewayBindingId       String?
+  gatewayProfileRef      String?
   order                  Int
   providerKind           String
   providerAuthMode       String
@@ -354,8 +489,10 @@ model ReviewConfigurationVersionProvider {
   fastMode               Boolean @default(false)
   requiredHealthy        Boolean @default(false)
 
-  configurationVersion ReviewConfigurationVersion @relation(fields: [configurationVersionId], references: [id], onDelete: Cascade)
+  configurationVersion ReviewConfigurationVersion @relation(fields: [configurationVersionId, workspaceId], references: [id, workspaceId], onDelete: Cascade, onUpdate: Restrict, map: "ReviewConfigurationVersionProvider_version_workspace_fkey")
+  gatewayBinding WorkspaceAccountBinding? @relation("OrderedGatewayBinding", fields: [gatewayBindingId, workspaceId], references: [id, workspaceId], onDelete: Restrict, onUpdate: Restrict, map: "ReviewConfigurationVersionProvider_binding_workspace_fkey")
 
+  @@index([gatewayBindingId, workspaceId], map: "ReviewConfigurationVersionProvider_gateway_binding_idx")
   @@unique([configurationVersionId, order])
   @@index([configurationVersionId])
 }
@@ -1018,6 +1155,8 @@ model ReviewRunAuthorization {
   operationalSloProfileId                                 String
   mutationEpoch                                           BigInt
   providerVoteLanes                                       Json
+  runtimeSnapshotCanonicalJson                            String?
+  gatewayExecutionCanonicalJson                           String?
   reviewInvestigationAuthorizationDescriptorCanonicalJson String?
   authorizationSafetyDecisionHash                         String
   protocolOfferHash                                       String

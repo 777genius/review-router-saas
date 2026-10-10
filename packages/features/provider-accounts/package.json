@@ -1,0 +1,33 @@
+{
+  "name": "@reviewrouter/features-provider-accounts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "production": "./dist/index.js",
+      "default": "./src/index.ts"
+    },
+    "./synchronization": {
+      "types": "./src/synchronization.ts",
+      "production": "./dist/synchronization.js",
+      "default": "./src/synchronization.ts"
+    }
+  },
+  "dependencies": {
+    "@prisma/client": "7.8.0",
+    "@reviewrouter/features-auth": "workspace:*"
+  },
+  "devDependencies": {
+    "@prisma/adapter-pg": "7.8.0",
+    "@types/pg": "8.23.1",
+    "pg": "8.23.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.tests.json",
+    "test": "node --import ./tests/register-source-loader.mjs --test tests/use-cases.test.mts tests/database-target.test.mts tests/fences.test.mts tests/binding-policy.test.mts",
+    "test:postgres": "node --experimental-transform-types --import ./tests/register-source-loader.mjs --test tests/postgres.test.mts"
+  }
+}

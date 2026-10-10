@@ -101,9 +101,7 @@ describe("GitHubReviewPublicationLifecycleAdapter", () => {
     });
     expect(calls).toHaveLength(5);
     expect(
-      queries
-        .filter((query) => !query.includes("PublicationCommandLedger"))
-        .every((query) => query.includes("author { login }")),
+      queries.every((query) => query.includes("author { login __typename }")),
     ).toBe(true);
   });
 
@@ -349,6 +347,59 @@ describe("GitHubReviewPublicationLifecycleAdapter", () => {
     });
   });
 
+  it.each([
+    ["allowlisted Bot", "review-router-ai", "Bot", true],
+    ["User alias", "review-router-ai", "User", false],
+    ["missing actor type", "review-router-ai", undefined, false],
+    ["unknown actor type", "review-router-ai", "Unknown", false],
+    ["unlisted Bot", "other-app", "Bot", false],
+  ] as const)(
+    "trusts only the actor-qualified Bot alias: %s",
+    async (_, authorLogin, authorType, trusted) => {
+      const result = await adapter({
+        async graphql<T>(query: string) {
+          if (query.includes("ReviewRouterPublicationCommandLedger")) {
+            return ledgerPage(null, false) as T;
+          }
+          return inventoryPage(
+            [
+              {
+                id: "thread-bot-alias",
+                isResolved: false,
+                comments: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [
+                    comment(
+                      "parent-bot-alias",
+                      `<!-- review-router-finding:${fingerprint} -->`,
+                      "2026-07-23T10:00:00Z",
+                      { viewerDidAuthor: false, authorLogin, authorType },
+                    ),
+                  ],
+                },
+              },
+            ],
+            false,
+          ) as T;
+        },
+      }).resolve(scope);
+
+      expect(result).toMatchObject({
+        status: LiveReviewPublicationLifecycleStatus.Available,
+        targets: trusted
+          ? [
+              {
+                threadId: "thread-bot-alias",
+                parentOwnedByIntegration: true,
+                threadStateHash:
+                  "9d72481fe7aa16c59a01664a997f66b56480dea19708d267bd081cdece95c62c",
+              },
+            ]
+          : [],
+      });
+    },
+  );
+
   it("ignores finding markers copied by an untrusted review author", async () => {
     const result = await adapter({
       async graphql<T>(query: string) {
@@ -433,11 +484,12 @@ describe("GitHubReviewPublicationLifecycleAdapter", () => {
   });
 
   it.each([
-    ["GitHub App", true],
-    ["github-actions", false],
+    ["GitHub App", true, "review-router-ai[bot]", undefined],
+    ["github-actions", false, "github-actions[bot]", undefined],
+    ["allowlisted bare Bot", false, "review-router-ai", "Bot"],
   ] as const)(
     "accepts a valid signed ledger authored by %s",
-    async (_, viewerDidAuthor) => {
+    async (_, viewerDidAuthor, authorLogin, authorType) => {
       const result = await adapter({
         async graphql<T>(query: string) {
           if (query.includes("ReviewRouterPublicationCommandLedger")) {
@@ -445,6 +497,9 @@ describe("GitHubReviewPublicationLifecycleAdapter", () => {
               commandLedgerBody(105),
               false,
               viewerDidAuthor,
+              authorLogin,
+              undefined,
+              authorType,
             ) as T;
           }
           return inventoryPage([], false) as T;
@@ -559,7 +614,14 @@ describe("GitHubReviewPublicationLifecycleAdapter", () => {
     const invalidOnly = await adapter({
       async graphql<T>(query: string) {
         if (query.includes("ReviewRouterPublicationCommandLedger")) {
-          return ledgerPage(commandLedgerBody(105, "0".repeat(64)), false) as T;
+          return ledgerPage(
+            commandLedgerBody(105, "0".repeat(64)),
+            false,
+            false,
+            "review-router-ai",
+            undefined,
+            "Bot",
+          ) as T;
         }
         return inventoryPage([], false) as T;
       },
@@ -799,6 +861,7 @@ function ledgerPage(
     ? "review-router-ai[bot]"
     : "github-actions[bot]",
   endCursor: string | null = "ledger-next",
+  authorType?: string,
 ) {
   const bodies = body === null ? [] : typeof body === "string" ? [body] : body;
   return {
@@ -810,7 +873,7 @@ function ledgerPage(
           nodes: bodies.map((value) => ({
             body: value,
             viewerDidAuthor,
-            author: { login: authorLogin },
+            author: { login: authorLogin, __typename: authorType },
           })),
         },
       },
@@ -858,6 +921,7 @@ function comment(
     readonly updatedAt?: string | null;
     readonly viewerDidAuthor?: boolean;
     readonly authorLogin?: string | null;
+    readonly authorType?: string | undefined;
   },
 ) {
   const viewerDidAuthor = overrides?.viewerDidAuthor ?? true;
@@ -876,7 +940,10 @@ function comment(
     updatedAt: overrides?.updatedAt ?? at,
     lastEditedAt: overrides?.lastEditedAt ?? null,
     viewerDidAuthor,
-    author: authorLogin === null ? null : { login: authorLogin },
+    author:
+      authorLogin === null
+        ? null
+        : { login: authorLogin, __typename: overrides?.authorType },
   };
 }
 

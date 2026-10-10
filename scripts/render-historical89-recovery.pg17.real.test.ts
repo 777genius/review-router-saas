@@ -31,7 +31,23 @@ const sourceUrl = `postgresql://postgres:fixture-only@dpg-source/${database}?ssl
 const targetUrl = `postgresql://postgres:fixture-only@dpg-target/${database}?sslmode=disable`;
 const seed = `INSERT INTO "Workspace" (id,slug,name,"updatedAt") VALUES ('recovery','recovery','disposable recovery',now()); CREATE SEQUENCE public.recovery_sequence; SELECT setval('public.recovery_sequence',9223372036854775806,true);`;
 const enabled = process.env.REVIEW_ROUTER_REQUIRE_HANDOFF_PG17 === "1";
-(enabled ? describe.sequential : describe.skip).each([false, true])(
+// Separate CI processes preserve each serial variant's independent fixture state.
+// Normal local runs still cover both variants; invalid selectors fail closed.
+const selectedDatabaseUtc =
+  process.env.REVIEW_ROUTER_HANDOFF_RECOVERY_DATABASE_UTC;
+const databaseUtcVariants: boolean[] =
+  selectedDatabaseUtc === undefined
+    ? [false, true]
+    : selectedDatabaseUtc === "false"
+      ? [false]
+      : selectedDatabaseUtc === "true"
+        ? [true]
+        : (() => {
+            throw new Error(
+              "historical89_recovery_database_utc_selector_invalid",
+            );
+          })();
+(enabled ? describe.sequential : describe.skip).each(databaseUtcVariants)(
   "historical89 actual custom dump and disposable restore, offline PG17.10 (database UTC=%s)",
   (databaseUtcSetting) => {
     const source = managedPg17Fixture(),

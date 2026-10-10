@@ -379,7 +379,7 @@ describe("offline Prisma generate", () => {
     const blueprint = readFileSync("render.yaml", "utf8");
     const dockerfile = readFileSync("deploy/self-hosted/Dockerfile", "utf8");
     const helper = "node scripts/generate-prisma-offline.mjs";
-    expect(ci.match(new RegExp(helper, "gu"))).toHaveLength(3);
+    expect(ci.match(new RegExp(helper, "gu"))).toHaveLength(4);
     expect(ci).not.toMatch(/run: pnpm db:generate/u);
     expect(ci).toContain('REVIEW_ROUTER_REQUIRE_OFFLINE_PRISMA: "1"');
     expect(readFileSync("package.json", "utf8")).toContain(

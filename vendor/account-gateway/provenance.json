@@ -1,0 +1,129 @@
+{
+  "package": "@agent-teams/account-gateway",
+  "version": "0.1.0",
+  "sourceRepository": "https://github.com/agent-teams-ai/account-gateway",
+  "sourceCommit": "e8c9216ff51647b6712471f45990e1c0477ce4e7",
+  "sha256": "a95ff89c10188794ea714f6a26f62d62d456c41f62e405daf7b826abc6f0ea7d",
+  "integrity": "sha512-O5gTDFvTPqAkaGP6VxRzCle0z4itlEJUD/L6lkf5x1+t3TnOClKr7nusvHaq3X4BC+PyXfLn6egW9fA1jQKCIQ==",
+  "private": true,
+  "published": false,
+  "sourceFiles": [
+    {
+      "path": "packages/account-gateway/package.json",
+      "sha256": "6ce2154f64ddac9228576af40e747bad8a96340783fd03fbead53f49d6a7a488"
+    },
+    {
+      "path": "packages/account-gateway/README.md",
+      "sha256": "2f07d30385b2894940e07645b83c4a9d7edee74bc6536b87ed656ce2144e2079"
+    },
+    {
+      "path": "packages/account-gateway/src/http/index.ts",
+      "sha256": "95be6aed7254655215cea7d186f754be28f22a5b11bd866aded20ec4f8d57838"
+    },
+    {
+      "path": "packages/account-gateway/src/get-modular/index.ts",
+      "sha256": "e6ea38b7b03cab7ef80bfa19e8027c579908eaaf695f3e576e6189c1ee69c614"
+    },
+    {
+      "path": "packages/account-gateway/src/contracts/index.ts",
+      "sha256": "369f38b536e5eb8a1ddb2644b8e7a4869fcfb6df68e5ae6d2da5fd9a7e5fbc1b"
+    },
+    {
+      "path": "packages/account-gateway/src/features/facade-client/http/ingress.ts",
+      "sha256": "48324f85e7d32886f229618742615b608cd2f1423f6c9ee9b6d086438736708f"
+    },
+    {
+      "path": "packages/account-gateway/src/features/facade-client/http/index.ts",
+      "sha256": "f970b9efcca3145bad7ac8dd0a22f091fa7903cd53010376deb7647d3116a460"
+    },
+    {
+      "path": "packages/account-gateway/src/features/facade-client/contracts/index.ts",
+      "sha256": "6970e0650d607298be29893132a9d6f8bbf442f4ebd8bd9a780334c2826fe7a8"
+    }
+  ],
+  "sourceTree": "81618fff86dfaaddee9d010e2262243fe524feac",
+  "reviewedSourceCommit": "e3c5b20656880b449e8126d25776dbe491a0df19",
+  "sourceArchiveSha256": "e7df942a01b913b486ff4ffd53db01bd476abb63ef1262225ea829ca20a693b2",
+  "build": {
+    "node": "24.21.0",
+    "typescript": "7.0.2",
+    "sourceInstall": "pnpm@11.28.2 install --frozen-lockfile",
+    "commands": ["node scripts/build.mjs", "npm pack --ignore-scripts"]
+  },
+  "qualificationRuns": [
+    "https://github.com/agent-teams-ai/account-gateway/actions/runs/37525751783",
+    "https://github.com/agent-teams-ai/account-gateway/actions/runs/37525751845"
+  ],
+  "buildInputs": [
+    {
+      "path": "scripts/build.mjs",
+      "sha256": "ae12115a0b19f9ff327d75cbcdd2d337bea39d8aa58b8e3e50e563c3982d30d8"
+    },
+    {
+      "path": "tsconfig.json",
+      "sha256": "21975dfe7b0c3ba51990fc3e675e917245b32845dbb9404364555f011bf229d4"
+    },
+    {
+      "path": "pnpm-lock.yaml",
+      "sha256": "949be1d3932f3834bdc2cbaee156852d33861b4697e40158a5167d5b5b7bf09b"
+    }
+  ],
+  "archiveFiles": [
+    {
+      "path": "README.md",
+      "sha256": "2f07d30385b2894940e07645b83c4a9d7edee74bc6536b87ed656ce2144e2079"
+    },
+    {
+      "path": "dist/contracts/index.d.ts",
+      "sha256": "d6c8d73c3cb9b857d1d784dbd7cca9031d67b19ec00d361b51d497d7fd745ac0"
+    },
+    {
+      "path": "dist/contracts/index.js",
+      "sha256": "0765dd7e72e8c87167ed3372af338fe856c1a695546f934c73efbbc453734a03"
+    },
+    {
+      "path": "dist/features/facade-client/contracts/index.d.ts",
+      "sha256": "de4b3f527d25c3bee16612f272fe373708bf33f423d66c8df0fc81747b45c7ea"
+    },
+    {
+      "path": "dist/features/facade-client/contracts/index.js",
+      "sha256": "859a844868962c49e4aa97dc158a30bc7606cd8cc6cc4be05fe221b7fc8ce428"
+    },
+    {
+      "path": "dist/features/facade-client/http/index.d.ts",
+      "sha256": "7d9e7acb42a919cff543fa9e3388b2c43e83081e601a5b597c4422551e51139f"
+    },
+    {
+      "path": "dist/features/facade-client/http/index.js",
+      "sha256": "49d148086525e4b538f0b9a271c85f29a4eeac84f1bbe9b10a343e488925f109"
+    },
+    {
+      "path": "dist/features/facade-client/http/ingress.d.ts",
+      "sha256": "f60e582b7912189e14e817ea9aa95be1bec6cdb2fdf9300bc2b59bc22a8cf767"
+    },
+    {
+      "path": "dist/features/facade-client/http/ingress.js",
+      "sha256": "2f8fd87eb60b98faccdb72b8282310c3e60ec03955942878615472561178e6ee"
+    },
+    {
+      "path": "dist/get-modular/index.d.ts",
+      "sha256": "5ae5da536e9f12025e4173969bc45533b563c572ef144c4217e5c427f61a7d4c"
+    },
+    {
+      "path": "dist/get-modular/index.js",
+      "sha256": "caa8d14e7dd8c0a3caf8867212a4e7217ca1e29a522d7cd13de1ee2638e1cc48"
+    },
+    {
+      "path": "dist/http/index.d.ts",
+      "sha256": "59833955177a33fa8dc762c57528c9e27acf740d3d20f783dd1f8ddaada1cd68"
+    },
+    {
+      "path": "dist/http/index.js",
+      "sha256": "6d09a1298e30e372763a97fa6e971a700fb8ff5c4254b51a8e55ad5e444e7e1c"
+    },
+    {
+      "path": "package.json",
+      "sha256": "6ce2154f64ddac9228576af40e747bad8a96340783fd03fbead53f49d6a7a488"
+    }
+  ]
+}

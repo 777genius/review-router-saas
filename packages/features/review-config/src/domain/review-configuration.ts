@@ -1,5 +1,7 @@
 import {
   defaultCodexModel,
+  gatewayReferenceSchema,
+  gatewayModelSchema,
   defaultProviderReasoningEffort,
   codexModelSupportsReasoningEffort,
   providerAuthModeBelongsToKind,
@@ -8,18 +10,34 @@ import {
 } from "@reviewrouter/features-review-providers";
 import { z } from "zod";
 
+const reviewProviderSettingsSchema = z.object({
+  kind: providerKindSchema,
+  model: z.string().trim().min(1),
+  reasoningEffort: z
+    .enum(["low", "medium", "high", "xhigh", "max", "ultra"])
+    .default(defaultProviderReasoningEffort),
+  agenticContext: z.boolean().default(true),
+  fastMode: z.boolean().default(false),
+  requiredHealthy: z.boolean().default(false),
+});
+
 export const reviewProviderConfigurationSchema = z
-  .object({
-    kind: providerKindSchema,
-    authMode: providerAuthModeSchema,
-    model: z.string().trim().min(1),
-    reasoningEffort: z
-      .enum(["low", "medium", "high", "xhigh", "max", "ultra"])
-      .default(defaultProviderReasoningEffort),
-    agenticContext: z.boolean().default(true),
-    fastMode: z.boolean().default(false),
-    requiredHealthy: z.boolean().default(false),
-  })
+  .discriminatedUnion("authMode", [
+    reviewProviderSettingsSchema.extend({
+      authMode: providerAuthModeSchema.exclude(["codex_account_gateway"]),
+      gatewayBindingId: z.never().optional(),
+      gatewayProfileRef: z.never().optional(),
+    }),
+    reviewProviderSettingsSchema
+      .extend({
+        kind: z.literal("codex"),
+        authMode: z.literal("codex_account_gateway"),
+        model: gatewayModelSchema,
+        gatewayBindingId: gatewayReferenceSchema,
+        gatewayProfileRef: gatewayReferenceSchema,
+      })
+      .strict(),
+  ])
   .superRefine((provider, context) => {
     if (!providerAuthModeBelongsToKind(provider.authMode, provider.kind)) {
       context.addIssue({
@@ -164,7 +182,7 @@ export const reviewConfigurationSchema =
     normalizeReviewConfiguration(input, tolerantNormalizeOptions),
   );
 
-export const safeDefaultReviewConfiguration = parseReviewConfiguration({
+const parsedSafeDefaultReviewConfiguration = parseReviewConfiguration({
   schemaVersion: 2,
   providers: [
     {
@@ -180,6 +198,21 @@ export const safeDefaultReviewConfiguration = parseReviewConfiguration({
   limits: { inlineMaxComments: 50, targetTokensPerBatch: 50000 },
   investigationRollout: defaultReviewInvestigationRolloutConfiguration,
 });
+
+// Keep the known legacy default precise when callers derive another provider
+// from it. Gateway references are valid only on explicitly parsed gateway rows.
+const safeDefaultProvider = parsedSafeDefaultReviewConfiguration.provider;
+if (
+  safeDefaultProvider.authMode === "codex_account_gateway" ||
+  parsedSafeDefaultReviewConfiguration.providers.length !== 1
+) {
+  throw new Error("review_configuration_default_requires_legacy_provider");
+}
+export const safeDefaultReviewConfiguration = {
+  ...parsedSafeDefaultReviewConfiguration,
+  provider: safeDefaultProvider,
+  providers: [safeDefaultProvider] as const,
+} satisfies ReviewConfiguration;
 
 export function parseReviewConfiguration(input: unknown): ReviewConfiguration {
   return reviewConfigurationSchema.parse(input);
@@ -289,6 +322,7 @@ function assertSupportedReasoningEfforts(
 ): void {
   for (const provider of providers) {
     if (
+      provider.authMode !== "codex_account_gateway" &&
       !codexModelSupportsReasoningEffort(
         provider.model,
         provider.reasoningEffort,
@@ -332,7 +366,13 @@ function assertUniqueProviderRows(
 }
 
 function providerRowKey(provider: ReviewProviderConfiguration): string {
-  return `${provider.kind}:${provider.authMode}:${provider.model.trim()}`;
+  return JSON.stringify([
+    provider.kind,
+    provider.authMode,
+    provider.model.trim(),
+    provider.gatewayBindingId ?? null,
+    provider.gatewayProfileRef ?? null,
+  ]);
 }
 
 function ensureRequiredHealthyProvider(

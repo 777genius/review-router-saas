@@ -29,8 +29,9 @@ function harness() {
       }),
       upsert: vi.fn(async () => {
         events.push("target");
-        return { id: "c" };
+        return { id: "c", workspaceId: "w", active: true };
       }),
+      updateMany: vi.fn(async () => ({ count: 0 })),
       deleteMany: vi.fn(async () => {
         events.push("delete");
         return { count: 0 };

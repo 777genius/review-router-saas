@@ -72,12 +72,11 @@ export function HostedPoolSettingsPanel({
     return (
       <section className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/60 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
         <h3 className="text-sm font-semibold text-cyan-50">
-          ChatGPT accounts are not enabled
+          Hosted ChatGPT pool is not enabled
         </h3>
         <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
-          This deployment is not accepting hosted ChatGPT accounts yet.
-          Repository reviews continue to use credentials configured in each
-          repository, so there is nothing to manage on this page right now.
+          Enrollment into the hosted ChatGPT pool is paused on this deployment.
+          Manage gateway accounts in Workspace accounts above.
         </p>
       </section>
     );

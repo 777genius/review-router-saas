@@ -167,7 +167,7 @@ describe("persistent dashboard shell", () => {
       "/dashboard/setup?workspace=one",
     );
     const accountTab = screen.getByRole("tab", {
-      name: /Accounts\s*Encrypted subscription accounts/,
+      name: /Accounts\s*Workspace provider accounts/,
     });
     expect(accountTab.getAttribute("aria-current")).toBe("page");
     for (const link of document.querySelectorAll('a[href^="/dashboard"]')) {

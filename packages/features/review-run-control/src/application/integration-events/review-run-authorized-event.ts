@@ -25,18 +25,21 @@ export type ReviewRunAuthorizedIntegrationEvent = {
 };
 
 export function reviewRunAuthorizedEvent(
-  authorization: ReviewRunAuthorization,
+  authorization: Omit<ReviewRunAuthorization, "version">,
 ): ReviewRunAuthorizedIntegrationEvent {
+  // Creation always admits version 1. Renewal/termination changes the current
+  // row version, never the original event's key, payload or creation time.
+  const creationAuthorizationVersion = 1;
   return {
     type: reviewRunAuthorizedEventType,
     version: reviewRunAuthorizedEventVersion,
-    idempotencyKey: `${reviewRunAuthorizedEventType}:v${reviewRunAuthorizedEventVersion}:${authorization.authorizationId}:${authorization.version}`,
+    idempotencyKey: `${reviewRunAuthorizedEventType}:v${reviewRunAuthorizedEventVersion}:${authorization.authorizationId}:${creationAuthorizationVersion}`,
     workspaceId: authorization.workspaceId,
     repositoryId: authorization.repositoryConnectionId,
     aggregateId: authorization.authorizationId,
     payload: {
       authorizationId: authorization.authorizationId,
-      authorizationVersion: authorization.version,
+      authorizationVersion: creationAuthorizationVersion,
       scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
       pullRequestNumber: authorization.pullRequestNumber,
       reviewRevisionHash: authorization.reviewRevisionHash,

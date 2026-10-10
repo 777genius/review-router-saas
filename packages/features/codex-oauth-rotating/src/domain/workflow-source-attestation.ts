@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { parseDocument } from "yaml";
 import {
   CodexRotatingT0WorkflowSchemaVersion,
+  areWorkflowDocumentsSemanticallyEqual,
+  readCanonicalWorkflowDocument,
+  readCanonicalAccountGatewayWorkflowSourceMetadata,
   isVersionedSecretNamespaceCodexWorkflowSchemaVersion,
   renderCanonicalCodexRotatingT0WorkflowV1,
   renderCanonicalCodexRotatingT0WorkflowV2,
@@ -17,6 +19,11 @@ import {
   serializeVersionedProviderSecretNamespaceMetadata,
   type VersionedProviderSecretNamespace,
 } from "./provider-secret-namespace";
+
+export {
+  areWorkflowDocumentsSemanticallyEqual,
+  workflowDocumentSemanticSha256,
+} from "./codex-oauth-rotating";
 
 export enum WorkflowSourceTrust {
   TrustedDefaultBranchRevision = "trusted_default_branch_revision",
@@ -280,6 +287,9 @@ export function readCanonicalCodexRotatingT0WorkflowSourceMetadata(
   const jobs = requireMapping(root.jobs);
   const reviewJob = requireMapping(jobs["codex-review"]);
   const reviewInputs = requireMapping(reviewJob.with);
+  if (Object.hasOwn(reviewInputs, "codex_session_mode")) {
+    return readCanonicalAccountGatewayWorkflowSourceMetadata(workflow);
+  }
   const workflowSchemaVersion = reviewInputs.workflow_schema_version;
   if (
     workflowSchemaVersion !==
@@ -484,57 +494,6 @@ function readVersionedSecretNamespace(
     metadata: name.slice(prefix.length, -1),
     providerInstanceId,
   });
-}
-
-export function areWorkflowDocumentsSemanticallyEqual(
-  actual: string,
-  expected: string,
-): boolean {
-  try {
-    return (
-      JSON.stringify(readCanonicalWorkflowDocument(actual)) ===
-      JSON.stringify(readCanonicalWorkflowDocument(expected))
-    );
-  } catch {
-    return false;
-  }
-}
-
-export function workflowDocumentSemanticSha256(source: string): string {
-  return createHash("sha256")
-    .update(JSON.stringify(readCanonicalWorkflowDocument(source)), "utf8")
-    .digest("hex");
-}
-
-function readCanonicalWorkflowDocument(source: string): unknown {
-  const document = parseDocument(source, {
-    schema: "core",
-    strict: true,
-    stringKeys: true,
-    uniqueKeys: true,
-    prettyErrors: false,
-  });
-  if (document.errors.length > 0 || document.warnings.length > 0) {
-    throw new Error("codex_rotating_workflow_yaml_invalid");
-  }
-  return canonicalizeWorkflowDocument(document.toJS({ maxAliasCount: 0 }));
-}
-
-function canonicalizeWorkflowDocument(value: unknown): unknown {
-  if (typeof value === "number" && !Number.isFinite(value)) {
-    throw new Error("codex_rotating_workflow_non_finite_number");
-  }
-  if (Array.isArray(value)) {
-    return value.map(canonicalizeWorkflowDocument);
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entry]) => [key, canonicalizeWorkflowDocument(entry)]),
-    );
-  }
-  return value;
 }
 
 function readCanonicalT0RefreshSchedule(root: Record<string, unknown>): string {

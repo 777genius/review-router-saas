@@ -43,6 +43,9 @@ import {
   claimReviewRequestedIntent,
   decideExecutionPreparation,
   decideExecutionPreparationReplay,
+  decideLeaseAcquire,
+  decideLeaseRelease,
+  LeaseAcquireDecisionStatus,
   ExecutionPreparationReplayDecisionStatus,
   ExecutionLifecycleDecisionStatus,
   decideReviewRequestedAdmission,
@@ -1452,6 +1455,98 @@ describe("start and admission saga", () => {
 });
 
 describe("work slots and fenced invocation leases", () => {
+  it("reports exhausted slots after the final lease is released", () => {
+    const prepared = decideExecutionPreparation({
+      stream: createEmptyReviewExecutionStream(scope, baseTime),
+      priorPrepared: null,
+      ...prepareCommand(),
+    });
+    const execution = {
+      ...prepared.execution,
+      state: ReviewExecutionState.Running,
+    };
+    const stream = {
+      ...prepared.stream,
+      preparedExecutionId: null,
+      activeExecutionId: execution.executionId,
+      currentRevision: revision,
+    };
+    const input = {
+      ...leaseCommand(),
+      stream,
+      execution,
+      activeLease: null,
+      fencingToken: 1n,
+    };
+    const acquired = decideLeaseAcquire(input);
+    if (acquired.status !== LeaseAcquireDecisionStatus.Acquired)
+      throw new Error("fixture_lease_not_acquired");
+    const released = decideLeaseRelease({
+      ...leaseTerm(acquired.lease),
+      lease: acquired.lease,
+      execution: acquired.execution,
+      now: plus(3),
+    });
+    if (!released.execution) throw new Error("fixture_execution_missing");
+    expect(released.execution.workSlots[0]).toMatchObject({
+      state: ReviewWorkSlotState.Exhausted,
+      attemptBudget: 1,
+      nextAttemptOrdinal: 2,
+      activeLeaseId: null,
+    });
+    const before = structuredClone(released.execution);
+    const retry = { ...input, execution: released.execution };
+    const exhausted = decideLeaseAcquire(retry);
+    expect(exhausted).toEqual({
+      status: LeaseAcquireDecisionStatus.AttemptBudgetExhausted,
+      execution: released.execution,
+      expiredLease: null,
+    });
+    if (!("execution" in exhausted)) throw new Error("exhaustion_missing");
+    expect(exhausted.execution).toBe(released.execution);
+    expect(released.execution).toEqual(before);
+
+    for (const state of [
+      ReviewWorkSlotState.Satisfied,
+      ReviewWorkSlotState.Cancelled,
+    ]) {
+      expect(
+        decideLeaseAcquire({
+          ...retry,
+          execution: {
+            ...released.execution,
+            workSlots: released.execution.workSlots.map((slot) => ({
+              ...slot,
+              state,
+            })),
+          },
+        }),
+      ).toEqual({ status: LeaseAcquireDecisionStatus.NotRunnable });
+    }
+    expect(
+      decideLeaseAcquire({
+        ...retry,
+        stream: { ...stream, activeExecutionId: null },
+      }),
+    ).toEqual({ status: LeaseAcquireDecisionStatus.NotRunnable });
+    expect(
+      decideLeaseAcquire({
+        ...retry,
+        execution: {
+          ...released.execution,
+          state: ReviewExecutionState.Failed,
+        },
+      }),
+    ).toEqual({ status: LeaseAcquireDecisionStatus.NotRunnable });
+    expect(
+      decideLeaseAcquire({ ...retry, workSlotId: "missing-slot" }),
+    ).toEqual({ status: LeaseAcquireDecisionStatus.MissingSlot });
+    expect(() =>
+      decideLeaseAcquire({ ...retry, providerVoteIdentityHash: hash("8") }),
+    ).toThrow("review_execution_provider_lane_identity_mismatch");
+    expect(released.execution).toEqual(before);
+  });
+
   it("forbids planned execution leases", async () => {
     const store = new InMemoryReviewExecutionStore();
     const prepared = await store.prepareExecution(prepareCommand());

@@ -30,6 +30,7 @@ describe("provider catalog", () => {
       "codex_subscription_oauth",
       "codex_subscription_oauth_rotating",
       "codex_subscription_oauth_hosted_pool",
+      "codex_account_gateway",
       "codex_openai_api_key",
       "mimo_token_plan_api_key",
       "claude_code_oauth",
@@ -168,4 +169,35 @@ describe("provider catalog", () => {
     );
     expect(cliToolsForProvider("codex-mimo")).toEqual(["codex"]);
   });
+});
+
+// Detects accidental UI advertisement, legacy auth coercion or secret requirements.
+it("keeps Account Gateway opt-in and owned by Codex", () => {
+  expect(providerKindForAuthMode("codex_account_gateway")).toBe("codex");
+  expect(toLegacyRuntimeAuthMode("codex_account_gateway")).toBe(
+    "codex-account-gateway",
+  );
+  expect(toProviderSetupKind("codex_account_gateway")).toBe("account_gateway");
+  expect(fromProviderSetupKind("account_gateway")).toBe(
+    "codex_account_gateway",
+  );
+  expect(getProviderSecretNames("codex_account_gateway")).toEqual([]);
+  expect(getProviderCatalogEntry("codex").authModes).not.toContain(
+    "codex_account_gateway",
+  );
+  for (const kind of ["claude", "openrouter"] as const) {
+    expect(() =>
+      assertProviderAuthModeBelongsToKind("codex_account_gateway", kind),
+    ).toThrow("provider_auth_mode_kind_mismatch");
+  }
+});
+
+// Detects unknown input resolving through inherited JavaScript object properties.
+it("rejects unknown kind/auth metadata instead of inventing a fallback", () => {
+  expect(() => getProviderCatalogEntry("toString" as never)).toThrow(
+    "unknown_provider_kind",
+  );
+  expect(() => providerKindForAuthMode("toString" as never)).toThrow(
+    "unknown_provider_auth_mode",
+  );
 });

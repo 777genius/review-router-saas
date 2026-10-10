@@ -571,8 +571,8 @@ describe("provider scope concurrency rollout control", () => {
     ],
     [
       "ordinary database redirected into the role-bearing cluster",
-      "127.0.0.1:5433/review_router_ci_test?schema=public",
-      "127.0.0.1:5432/review_router_ci_test?schema=public",
+      "      REVIEW_ROUTER_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5433/review_router_ci_test?schema=public\n\n    services:",
+      "      REVIEW_ROUTER_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/review_router_ci_test?schema=public\n\n    services:",
     ],
     [
       "provider pre-79 catalog removed",

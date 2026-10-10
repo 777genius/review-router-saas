@@ -17,6 +17,8 @@ import {
 } from "./review-run-control-types";
 import type { ReviewRunAuthorizationTokenAudience } from "./review-run-control-types";
 
+import { parseReviewRunRuntimeSnapshot } from "./review-run-runtime-snapshot";
+
 export type ReviewRunRevision = {
   readonly baseSha: string;
   readonly mergeBaseSha: string;
@@ -26,6 +28,8 @@ export type ReviewRunRevision = {
 
 export type ReviewRunAuthorization = ReviewRunScope &
   ReviewRunRevision & {
+    /** Nullable for authorizations admitted before runtime pinning. Private only. */
+    readonly runtimeSnapshotCanonicalJson?: string | null;
     readonly authorizationId: string;
     readonly version: number;
     readonly sourceRunId: string;
@@ -73,6 +77,8 @@ export function createReviewRunAuthorization(
   assertAuthorizationCandidate(candidate);
   return {
     ...candidate,
+    runtimeSnapshotCanonicalJson:
+      candidate.runtimeSnapshotCanonicalJson ?? null,
     reviewInvestigationAuthorizationDescriptorCanonicalJson:
       normalizeReviewInvestigationAuthorizationDescriptor(
         candidate.reviewInvestigationAuthorizationDescriptorCanonicalJson,
@@ -280,6 +286,12 @@ function assertAuthorizationCandidate(
     candidate.maxExpiresAt < candidate.expiresAt
   ) {
     invalid("authorization_expiry_invalid");
+  }
+  const runtime = parseReviewRunRuntimeSnapshot(
+    candidate.runtimeSnapshotCanonicalJson,
+  );
+  if (runtime && runtime.deadline !== candidate.maxExpiresAt.toISOString()) {
+    invalid("runtime_snapshot_deadline_mismatch");
   }
   normalizeProviderVoteLanes(candidate.providerVoteLanes);
   normalizeReviewInvestigationAuthorizationDescriptor(

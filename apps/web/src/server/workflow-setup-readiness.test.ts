@@ -17,6 +17,7 @@ import {
   renderCanonicalCodexRotatingInteractionWorkflowV2,
   renderCodexRotatingInteractionWorkflow,
   renderCodexRotatingAdvisoryWorkflow,
+  renderAccountGatewayWorkflow,
 } from "@reviewrouter/features-workflow-provisioning";
 import { isWorkflowSetupAlreadyCurrent } from "./workflow-setup-readiness";
 
@@ -48,6 +49,84 @@ const readinessInput = {
 const versionedActionRef =
   "777genius/review-router@0123456789abcdef0123456789abcdef01234567";
 const versionedProviderInstanceId = "codex-rotating:123456";
+
+it.each([
+  "current",
+  "wrong-mode",
+  "missing-mode",
+  "static",
+  "extra-secret",
+  "wrong-schema",
+  "wrong-identity",
+  "old-ref",
+  "namespace",
+])("checks actual gateway caller bytes for %s readiness", async (scenario) => {
+  let workflow = renderAccountGatewayWorkflow({
+    actionRef: versionedActionRef,
+    apiUrl: "https://app.reviewrouter.dev",
+    githubRepositoryId: readinessInput.githubRepositoryId,
+  }).content;
+  if (scenario === "wrong-mode")
+    workflow = workflow.replace("account-gateway", "oauth");
+  if (scenario === "missing-mode")
+    workflow = workflow.replace(
+      "      codex_session_mode: account-gateway\n",
+      "",
+    );
+  if (scenario === "static")
+    workflow = workflow.replace(
+      "runtime_config_mode: oidc",
+      "runtime_config_mode: static",
+    );
+  if (scenario === "extra-secret") workflow += "    secrets: inherit\n";
+  if (scenario === "wrong-schema")
+    workflow = workflow.replace(
+      "workflow_schema_version: 2",
+      "workflow_schema_version: 4",
+    );
+  if (scenario === "wrong-identity")
+    workflow = workflow.replace(
+      "codex-rotating:123456",
+      "codex-rotating:999999",
+    );
+  if (scenario === "old-ref")
+    workflow = workflow.replaceAll(
+      versionedActionRef.split("@")[1]!,
+      "a".repeat(40),
+    );
+  if (scenario === "namespace")
+    workflow = workflow.replace(
+      "ReviewRouter Codex",
+      "ReviewRouter Codex OAuth [namespace-v4]",
+    );
+  const paths: string[] = [];
+  const current = await isWorkflowSetupAlreadyCurrent(
+    {
+      ...readinessInput,
+      actionRef: versionedActionRef,
+      codexSessionMode: "account-gateway",
+    },
+    {
+      resolvePublicApiUrl: () => "https://app.reviewrouter.dev",
+      workflowProbe: new OctokitRepositoryWorkflowProbe({
+        createRequester: async () => ({
+          request: async (_route, parameters) => {
+            paths.push(String(parameters?.path));
+            return {
+              data: {
+                type: "file",
+                encoding: "base64",
+                content: Buffer.from(workflow).toString("base64"),
+              },
+            };
+          },
+        }),
+      }),
+    },
+  );
+  expect(current).toBe(scenario === "current");
+  expect(paths).toEqual([".github/workflows/reviewrouter-codex.yml"]);
+});
 const v4SecretNamespace = createVersionedProviderSecretNamespace({
   scope: {
     repositoryId: "123456",

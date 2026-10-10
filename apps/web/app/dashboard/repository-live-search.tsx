@@ -13,6 +13,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { RepositorySetupRowDisclosureController } from "./repository-setup-optimistic-status";
+import { GatewayRepositoryBatchTargetToggle } from "./gateway-repository-batch-controls";
 
 export type RepositorySearchFilter =
   | "all"
@@ -298,6 +299,7 @@ export function RepositoryLiveSearch({
                 hidden={!visibleIdSet.has(id)}
                 data-repository-result-slot
               >
+                <GatewayRepositoryBatchTargetToggle repositoryId={id} />
                 {richRow}
               </div>
             );
@@ -305,6 +307,7 @@ export function RepositoryLiveSearch({
           const item = summaryById.get(id);
           return item ? (
             <div key={id} data-repository-result-slot>
+              <GatewayRepositoryBatchTargetToggle repositoryId={id} />
               <RepositorySummaryRow
                 item={item}
                 pending={pendingRepositoryId === id}

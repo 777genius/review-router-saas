@@ -1,5 +1,7 @@
 import {
   cliToolsForProvider,
+  gatewayReferenceSchema,
+  gatewayModelSchema,
   getProviderCatalogEntry,
   getProviderAuthModeMetadata,
   providerAuthModeBelongsToKind,
@@ -12,15 +14,30 @@ import type { CodexReasoningEffort } from "./provider-models";
 
 export type RuntimePlanReasoningEffort = CodexReasoningEffort;
 
-export type RuntimePlanProviderConfiguration = {
+type RuntimePlanProviderSettings = {
   readonly kind: ProviderKind;
-  readonly authMode: ProviderAuthMode;
   readonly model: string;
   readonly reasoningEffort: RuntimePlanReasoningEffort;
   readonly agenticContext: boolean;
   readonly fastMode: boolean;
   readonly requiredHealthy?: boolean;
 };
+
+// Safe selection, not a relay grant or execution capability.
+export type RuntimePlanProviderConfiguration = RuntimePlanProviderSettings &
+  (
+    | {
+        readonly kind: "codex";
+        readonly authMode: "codex_account_gateway";
+        readonly gatewayBindingId: string;
+        readonly gatewayProfileRef: string;
+      }
+    | {
+        readonly authMode: Exclude<ProviderAuthMode, "codex_account_gateway">;
+        readonly gatewayBindingId?: undefined;
+        readonly gatewayProfileRef?: undefined;
+      }
+  );
 
 export type RuntimePlanExecutionConfiguration = {
   readonly providerLimit: number;
@@ -175,6 +192,16 @@ function validateRuntimePlanProvider(
 ): RuntimePlanProviderConfiguration {
   if (!providerAuthModeBelongsToKind(provider.authMode, provider.kind)) {
     throw new Error("provider_auth_mode_kind_mismatch");
+  }
+  if (provider.authMode === "codex_account_gateway") {
+    gatewayModelSchema.parse(provider.model);
+    gatewayReferenceSchema.parse(provider.gatewayBindingId);
+    gatewayReferenceSchema.parse(provider.gatewayProfileRef);
+  } else if (
+    provider.gatewayBindingId !== undefined ||
+    provider.gatewayProfileRef !== undefined
+  ) {
+    throw new Error("gateway_selection_forbidden_for_auth_mode");
   }
   if (!provider.model.trim()) {
     throw new Error("provider_model_required");

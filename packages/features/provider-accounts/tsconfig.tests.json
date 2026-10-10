@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "allowJs": true, "checkJs": false },
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.mts",
+    "tests/**/*.ts",
+    "tests/database-target.mjs"
+  ]
+}

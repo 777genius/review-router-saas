@@ -46,6 +46,7 @@ import {
 import { investigationRolloutSelectorsEnv } from "@reviewrouter/features-review-investigation-operations/composition";
 import { ReviewInvestigationOperationsDiagnosticCode } from "./review-investigation-operations-composition.js";
 import { reviewActionV2ProjectionPolicyVersion } from "./review-action-v2-projection-policy.js";
+import * as runControlComposition from "./review-action-v2-run-control-composition.js";
 
 const runtime = {
   readServerTime: async () => new Date("2026-07-23T00:00:00.000Z"),
@@ -57,7 +58,7 @@ describe("Review Action v2 production composition", () => {
     expect(
       composeReviewActionV2ProductionRoutes({
         enabled: false,
-        env: {},
+        env: { REVIEW_ROUTER_REVIEW_V2_MAX_AUTHORIZATION_LIFETIME_MS: "NaN" },
         runtime,
       }),
     ).toEqual({
@@ -79,6 +80,59 @@ describe("Review Action v2 production composition", () => {
     await app.ready();
     await app.close();
   });
+
+  it.each([
+    [undefined, 21600000],
+    ["3600000", 3600000],
+    ["1", 1],
+  ] as const)(
+    "wires trusted authorization maximum %s into the real server handler",
+    (value, maximum) => {
+      const compose = vi.spyOn(
+        runControlComposition,
+        "composeReviewActionV2RunControlRoutes",
+      );
+      try {
+        const env = {
+          ...productionEnv(),
+          REVIEW_ROUTER_REVIEW_V2_MAX_AUTHORIZATION_LIFETIME_MS: value,
+        };
+        const routes = composeReviewActionV2ProductionRoutes({
+          enabled: true,
+          env,
+          runtime,
+          prisma: inertPrisma(),
+        });
+        expect(routes.runControl.authorize?.capabilityEnabled).toBe(true);
+        expect(compose.mock.calls[0]?.[0].handlers).toMatchObject({
+          maxAuthorizationLifetimeMs: maximum,
+          authorizationTtlMs: 3600000,
+        });
+      } finally {
+        compose.mockRestore();
+      }
+    },
+  );
+
+  it.each(["", " ", "NaN", "0", "-1", "1.5", "21600001", "0x10", "1e3"])(
+    "rejects invalid trusted authorization maximum %j with a finite error",
+    (value) => {
+      const env = {
+        ...productionEnv(),
+        REVIEW_ROUTER_REVIEW_V2_MAX_AUTHORIZATION_LIFETIME_MS: value,
+      };
+      expect(() =>
+        composeReviewActionV2ProductionRoutes({
+          enabled: true,
+          env,
+          runtime,
+          prisma: inertPrisma(),
+        }),
+      ).toThrowError(
+        new Error("review_action_v2_max_authorization_lifetime_invalid"),
+      );
+    },
+  );
 
   it("fails enabled boot before constructing adapters without Prisma", () => {
     expect(() =>

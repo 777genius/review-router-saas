@@ -17,8 +17,8 @@ vi.mock("./render-schema-handoff-policy.mjs", async (importOriginal) => {
   };
 });
 const reader = vi.mocked(readRenderManagedCheckoutInventory);
-// Preserve the exact old main prefix independently of checkout-only additions.
-// Current source admission is exercised separately against complete SQL bytes.
+// Preserve old immutable-prefix fixtures through 000124 explicitly.
+// The complete current checkout is exercised separately.
 const currentFull = readRenderManagedCheckoutInventory();
 const full = currentFull.filter(
   (row) =>
@@ -41,8 +41,44 @@ const manifest = (rows: typeof full) =>
 afterEach(() => reader.mockReset());
 
 describe("trusted historical96 checkout reader", () => {
-  it("validates the full115 source and returns only the exact immutable historical96", () => {
-    expect(full).toHaveLength(115);
+  it("validates the full123 source and returns only the exact immutable historical96", () => {
+    expect(full).toHaveLength(123);
+    expect(full[122]).toEqual({
+      migrationName: "000124_personal_account_operations",
+      checksum:
+        "2ffa20a0d21182bad0dfdce6653bc09b436cd72ab6335ac8065a17462bd3c6a1",
+    });
+    expect(manifest(full)).toBe(
+      "sha256:f26da08b44ad6830f4486f93ed33979acda7b5669a8550601c34dbf9c0322443",
+    );
+    expect(full[121]).toEqual({
+      migrationName: "000123_personal_workspace_identity",
+      checksum:
+        "b459bbb36015e16656fa20d5712b14fa19a87a415b801e0e8ea641e9020f19f6",
+    });
+    expect(full[120]).toEqual({
+      migrationName: "000122_review_configuration_operation_receipt",
+      checksum:
+        "89f9f4eadeb88733adddb051bca5e50bdc86bbb06e45905d3bdf18eedbd1386e",
+    });
+    expect(full[119]?.migrationName).toBe(
+      "000121_review_run_gateway_execution_binding",
+    );
+    expect(manifest(full.slice(0, 122))).toBe(
+      "sha256:5629630be035cbf1677692e840bc07c7292729bfb5bfc0c242f38179f3230df4",
+    );
+    expect(manifest(full.slice(0, 121))).toBe(
+      "sha256:858537d185e32ef6258ddf674b5a201e6cc0c4e44fa948a18af23d6dd55905ec",
+    );
+    expect(manifest(full.slice(0, 120))).toBe(
+      "sha256:5f01c4416620cf984ffa5fee8dbb26bcf171ae3a89ec4e4b8615e4c7c8461c64",
+    );
+    expect(full[118]?.migrationName).toBe("000120_review_run_runtime_snapshot");
+    expect(full[117]?.migrationName).toBe(
+      "000119_review_configuration_gateway_binding",
+    );
+    expect(full[116]?.migrationName).toBe("000118_workspace_binding_fences");
+    expect(full[115]?.migrationName).toBe("000117_provider_accounts");
     expect(full[114]?.migrationName).toBe(
       "000116_hosted_codex_relay_admission_utc",
     );
@@ -112,9 +148,20 @@ describe("trusted historical96 checkout reader", () => {
     { checkout: checkout109 },
     { checkout: full.slice(0, 110) },
     { checkout: full.slice(0, 111) },
+    { checkout: full.slice(0, 112) },
+    { checkout: full.slice(0, 113) },
+    { checkout: full.slice(0, 114) },
+    { checkout: full.slice(0, 115) },
+    { checkout: full.slice(0, 116) },
+    { checkout: full.slice(0, 117) },
+    { checkout: full.slice(0, 118) },
+    { checkout: full.slice(0, 119) },
+    { checkout: full.slice(0, 120) },
+    { checkout: full.slice(0, 121) },
+    { checkout: full.slice(0, 122) },
     { checkout: full },
   ])(
-    "accepts a complete validated checkout through 000114 (%#)",
+    "accepts a complete validated checkout through 000124 (%#)",
     ({ checkout }) => {
       reader.mockImplementationOnce(() => {
         partitionRenderSchemaHandoffCheckout(checkout);
@@ -151,6 +198,20 @@ describe("trusted historical96 checkout reader", () => {
     [
       "reordered checkout-only extensions",
       [...full.slice(0, -2), full.at(-1)!, full.at(-2)!],
+    ],
+    [
+      "relabelled 123",
+      [
+        ...full.slice(0, 121),
+        { ...full[121]!, migrationName: "000123_relabelled" },
+      ],
+    ],
+    [
+      "relabelled 122",
+      [
+        ...full.slice(0, 120),
+        { ...full[120]!, migrationName: "000122_relabelled" },
+      ],
     ],
     [
       "relabelled 110",
@@ -191,7 +252,8 @@ describe("trusted historical96 checkout reader", () => {
   );
 
   it.each([
-    96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110,
+    96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111,
+    112, 113, 114, 115, 116, 117, 118, 119, 120,
   ])(
     "does not hide a rejected checkout-only SQL checksum at %i",
     (extensionIndex) => {

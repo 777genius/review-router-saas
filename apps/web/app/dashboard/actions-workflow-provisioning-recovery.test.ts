@@ -78,7 +78,10 @@ vi.mock("../../src/server/workflow-public-api-url", () => ({
 }));
 
 import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
-import { safeDefaultReviewConfiguration } from "@reviewrouter/features-review-config";
+import {
+  parseReviewConfiguration,
+  safeDefaultReviewConfiguration,
+} from "@reviewrouter/features-review-config";
 import { renderReviewRouterReusableWorkflow } from "@reviewrouter/features-workflow-provisioning";
 import {
   createProvisioningPrisma,
@@ -155,11 +158,16 @@ describe("dashboard setup PR recovery", () => {
       isWorkflowSetupAlreadyCurrent,
     );
     mocks.resolveReviewRuntimeEnv.mockResolvedValue({
-      config: {
+      config: parseReviewConfiguration({
+        ...safeDefaultReviewConfiguration,
         providers: [
-          { kind: "openrouter", authMode: "api_key", model: "openai/gpt-5" },
+          {
+            kind: "openrouter",
+            authMode: "openrouter_api_key",
+            model: "openai/gpt-5",
+          },
         ],
-      },
+      }),
     });
   });
 
@@ -406,7 +414,16 @@ describe("dashboard setup PR recovery", () => {
     expect(workflowProvisioning.updateMany).toHaveBeenCalledTimes(1);
 
     mocks.resolveReviewRuntimeEnv.mockResolvedValueOnce({
-      config: { providers: [{ kind: "codex-mimo" }] },
+      config: parseReviewConfiguration({
+        ...safeDefaultReviewConfiguration,
+        providers: [
+          {
+            kind: "codex-mimo",
+            authMode: "mimo_token_plan_api_key",
+            model: "mimo-v2.6-pro",
+          },
+        ],
+      }),
     });
     mimoWorkflow = true;
     await expect(

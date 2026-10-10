@@ -1,4 +1,5 @@
 import type { AuditLogRepositoryPort } from "@reviewrouter/features-audit-log";
+import type { ReviewConfigurationRepositoryPort } from "@reviewrouter/features-review-config";
 import type {
   ReviewRouterDiscussionMode,
   ReviewRouterWorkflowStyle,
@@ -24,6 +25,7 @@ export type ProvisionRepositoryReviewRouterWorkflowInput = {
   readonly actionRef: string;
   readonly apiUrl: string;
   readonly runtimeConfigMode: "oidc" | "static";
+  readonly codexSessionMode?: "account-gateway";
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
   readonly workflowStyle?: ReviewRouterWorkflowStyle;
   readonly discussionMode?: ReviewRouterDiscussionMode;
@@ -45,6 +47,8 @@ export async function provisionRepositoryReviewRouterWorkflow(
     readonly auditLog?: AuditLogRepositoryPort;
     readonly enabled?: boolean;
     readonly auditMetadata?: Readonly<Record<string, unknown>>;
+    readonly configurations?: ReviewConfigurationRepositoryPort;
+    readonly trustedGithubRepositoryId?: string;
   },
 ) {
   const target =
@@ -91,6 +95,9 @@ export async function provisionRepositoryReviewRouterWorkflow(
       actionRef: input.actionRef,
       apiUrl: input.apiUrl,
       runtimeConfigMode: input.runtimeConfigMode,
+      ...(input.codexSessionMode
+        ? { codexSessionMode: input.codexSessionMode }
+        : {}),
       ...(input.workflowPath ? { workflowPath: input.workflowPath } : {}),
       ...(input.workflowStyle ? { workflowStyle: input.workflowStyle } : {}),
       ...(input.discussionMode ? { discussionMode: input.discussionMode } : {}),
@@ -143,6 +150,12 @@ export async function provisionRepositoryReviewRouterWorkflow(
     {
       setupGateway: dependencies.setupGateway,
       provisioning: dependencies.provisioning,
+      ...(dependencies.configurations
+        ? { configurations: dependencies.configurations }
+        : {}),
+      ...(dependencies.trustedGithubRepositoryId
+        ? { trustedGithubRepositoryId: dependencies.trustedGithubRepositoryId }
+        : {}),
       ...(dependencies.auditLog ? { auditLog: dependencies.auditLog } : {}),
       ...(dependencies.enabled === undefined
         ? {}

@@ -50,6 +50,7 @@ import { recordActionHealthReport } from "../application/use-cases/record-action
 import { requestConflictReviewPostingSession } from "../application/use-cases/request-conflict-review-posting-session.js";
 import {
   actionHealthReportMaxBytes,
+  actionRuntimeConfigResponseSchema,
   assertSafeActionHealthReport,
   defaultActionOidcAudience,
   githubActionsOidcIssuer,
@@ -94,6 +95,17 @@ const sessionClaims: ActionSessionClaims = {
   eventName: "pull_request",
   protocolVersion: 1,
 };
+
+const gatewayRuntimeProvider = {
+  kind: "codex",
+  authMode: "codex_account_gateway",
+  model: "mimo-v2-pro",
+  reasoningEffort: "high",
+  agenticContext: true,
+  fastMode: false,
+  gatewayBindingId: "binding-server-saved",
+  gatewayProfileRef: "profile-mimo",
+} as const;
 
 const defaultOpenRouterRuntimeConfig = parseReviewConfiguration({
   ...safeDefaultReviewConfiguration,
@@ -2320,6 +2332,93 @@ describe("action control plane", () => {
           },
         ),
       ).rejects.toThrow(expectedCode);
+    },
+  );
+
+  it("returns saved gateway config through an authenticated approved workflow", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.runtimeConfig = parseReviewConfiguration({
+      ...safeDefaultReviewConfiguration,
+      providers: [gatewayRuntimeProvider],
+    });
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const signed = await sessions.sign({
+      claims: {
+        ...sessionClaims,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+      },
+      expiresInSeconds: 60,
+      issuedAt: fixedNow,
+    });
+    const config = actionRuntimeConfigResponseSchema.parse(
+      await getActionRuntimeConfig(
+        { sessionToken: signed.token },
+        {
+          repositories,
+          sessions,
+          clock,
+          defaultProvider: { model: "gpt-5.5", reasoningEffort: "medium" },
+        },
+      ),
+    );
+    expect(config.provider).toMatchObject({
+      authMode: "codex_account_gateway",
+      model: "mimo-v2-pro",
+      secretBackedProviderEnabled: false,
+    });
+    expect(config.configVersion).toBe(7);
+    expect(config.providers).toEqual([config.provider]);
+    expect(config.runtimeEnv).toMatchObject({
+      REVIEW_AUTH_MODE: "codex-account-gateway",
+      REVIEW_ROUTER_GATEWAY_BINDING_ID: "binding-server-saved",
+      REVIEW_ROUTER_GATEWAY_PROFILE_REF: "profile-mimo",
+      CODEX_MODEL: "mimo-v2-pro",
+      CODEX_REASONING_EFFORT: "high",
+      CODEX_FAST_MODE: "false",
+      REVIEW_PROVIDERS: "codex/mimo-v2-pro",
+      SYNTHESIS_MODEL: "codex/mimo-v2-pro",
+    });
+    expect(JSON.stringify(config)).not.toMatch(
+      /SECRET|PRIVATE_KEY|AUTH_JSON|API_KEY|ACCESS_TOKEN|REFRESH_TOKEN/,
+    );
+  });
+
+  it.each(["missing", "legacy", "wrong", "mixed"] as const)(
+    "denies saved gateway config for %s selection",
+    async (scenario) => {
+      const repositories = new InMemoryActionControlPlaneRepository();
+      repositories.runtimeConfig = parseReviewConfiguration({
+        ...safeDefaultReviewConfiguration,
+        providers:
+          scenario === "mixed"
+            ? [defaultOpenRouterRuntimeConfig.provider, gatewayRuntimeProvider]
+            : [gatewayRuntimeProvider],
+      });
+      const workflowPath =
+        scenario === "legacy"
+          ? ".github/workflows/reviewrouter.yml"
+          : scenario === "wrong"
+            ? ".github/workflows/other.yml"
+            : ".github/workflows/reviewrouter-codex.yml";
+      await expect(
+        getActionRuntimeConfig(
+          { sessionToken: "session" },
+          {
+            repositories,
+            sessions: new StaticSessionTokenService({
+              ...sessionClaims,
+              ...(scenario === "missing" ? {} : { workflowPath }),
+            }),
+            clock,
+          },
+        ),
+      ).rejects.toThrow(
+        scenario === "mixed"
+          ? "codex_gateway_single_provider_required"
+          : "codex_provider_requires_rotating_workflow",
+      );
     },
   );
 

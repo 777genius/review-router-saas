@@ -64,7 +64,12 @@ function withCodexAuthMode(
 ): ReviewConfiguration | null {
   let foundCodex = false;
   const providers = configuration.providers.map((provider) => {
-    if (provider.kind !== "codex") return provider;
+    // Explicit gateway selections do not participate in legacy pool switching.
+    if (
+      provider.kind !== "codex" ||
+      provider.authMode === "codex_account_gateway"
+    )
+      return provider;
     foundCodex = true;
     return { ...provider, authMode };
   });

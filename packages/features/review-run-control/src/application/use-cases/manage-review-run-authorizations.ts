@@ -1,3 +1,5 @@
+import { parseReviewRunRuntimeSnapshot } from "../../domain/review-run-runtime-snapshot";
+import type { ReviewRunRuntimeSnapshotPort } from "../ports/review-run-runtime-snapshot-port";
 import { tokenClaimsMatchAuthorization } from "./token-claims-match-authorization";
 import type { ProducerRelease } from "../../domain/producer-release";
 import type {
@@ -130,6 +132,7 @@ export type ReviewRunAuthorizationTokenResolution =
 export class ManageReviewRunAuthorizations {
   constructor(
     private readonly dependencies: {
+      readonly runtimeSnapshots?: ReviewRunRuntimeSnapshotPort;
       readonly clock: ClockPort;
       readonly identifiers: IdentifierFactoryPort;
       readonly digest: Sha256DigestPort;
@@ -164,8 +167,21 @@ export class ManageReviewRunAuthorizations {
       input.maxAuthorizationLifetimeMs,
       "max_authorization_lifetime_ms",
     );
+    const verifiedIdentity = snapshotVerifiedIdentity(input.verifiedIdentity);
+    const original = this.dependencies.runtimeSnapshots
+      ? await this.dependencies.authorizationQueries.findReviewRunAuthorizationForAdmission?.(
+          {
+            workspaceId: verifiedIdentity.workspaceId,
+            repositoryConnectionId: verifiedIdentity.repositoryConnectionId,
+            scmRepositoryIdentityId: verifiedIdentity.scmRepositoryIdentityId,
+            sourceRunId: verifiedIdentity.sourceRunId,
+            sourceRunAttempt: verifiedIdentity.sourceRunAttempt,
+            protocolOfferHash: input.protocolOfferHash,
+          },
+        )
+      : null;
     const eligibility = await this.loadEligibility(
-      input.verifiedIdentity,
+      verifiedIdentity,
       input.producerReleaseId,
       input.providerVoteLanes,
     );
@@ -173,24 +189,69 @@ export class ManageReviewRunAuthorizations {
       return denied(eligibility.denied);
     }
     const now = this.dependencies.clock.now();
-    const maxExpiresAt = new Date(
+    let maxExpiresAt = new Date(
       now.getTime() + input.maxAuthorizationLifetimeMs,
     );
-    const expiresAt = new Date(
+    let expiresAt = new Date(
       Math.min(
         now.getTime() + input.authorizationTtlMs,
         maxExpiresAt.getTime(),
       ),
     );
+    // Restore before settings/binding selection. A racing winner is restored again
+    // by the atomic repository; only its snapshot is checked/returned below.
+    let runtimeSnapshotCanonicalJson =
+      original?.runtimeSnapshotCanonicalJson ?? null;
+    if (!original && this.dependencies.runtimeSnapshots) {
+      // Signed capabilities encode whole seconds. Select the bounded deadline
+      // before capture so the frozen intent never promises a later instant.
+      const gatewayMaxExpiresAt = new Date(
+        Math.floor(maxExpiresAt.getTime() / 1000) * 1000,
+      );
+      const captured = await this.dependencies.runtimeSnapshots.capture({
+        identity: verifiedIdentity,
+        deadline:
+          gatewayMaxExpiresAt > now ? gatewayMaxExpiresAt : maxExpiresAt,
+      });
+      if (!captured)
+        return denied(ReviewRunAuthorizationDenialReason.AdmissionFactsChanged);
+      runtimeSnapshotCanonicalJson = canonicalJson(captured);
+      const snapshot = parseReviewRunRuntimeSnapshot(
+        runtimeSnapshotCanonicalJson,
+      );
+      if (snapshot?.gateway?.limits) {
+        if (gatewayMaxExpiresAt <= now)
+          return denied(
+            ReviewRunAuthorizationDenialReason.AdmissionFactsChanged,
+          );
+        maxExpiresAt = gatewayMaxExpiresAt;
+        if (snapshot.deadline !== maxExpiresAt.toISOString())
+          return denied(
+            ReviewRunAuthorizationDenialReason.AdmissionFactsChanged,
+          );
+        // One gateway capability covers the original server-approved run. The
+        // signed token and persisted row must agree through that deadline; the
+        // ordinary renewable TTL still applies to other admissions. Restores
+        // retain the original row and never acquire a later deadline here.
+        expiresAt = maxExpiresAt;
+      } else {
+        // Ordinary TTL admissions retain their original millisecond maximum.
+        runtimeSnapshotCanonicalJson = canonicalJson({
+          ...captured,
+          deadline: maxExpiresAt.toISOString(),
+        });
+      }
+    }
     const tokenProfile = this.dependencies.tokens.profile();
     const write =
       await this.dependencies.authorizationCommands.createOrRestoreReviewRunAuthorizationAtomically(
         {
           candidate: {
+            ...verifiedIdentity,
+            runtimeSnapshotCanonicalJson,
             authorizationId: this.dependencies.identifiers.nextId(
               "review_run_authorization",
             ),
-            ...input.verifiedIdentity,
             producerReleaseId: eligibility.release.producerReleaseId,
             selectedProtocolVersion: ReviewProtocolVersion.V2,
             schemaDigest: eligibility.release.schemaDigest,
@@ -211,7 +272,7 @@ export class ManageReviewRunAuthorizations {
             tokenIssuer: tokenProfile.issuer,
             tokenAudience: tokenProfile.audience,
             expiresAt,
-            maxExpiresAt,
+            maxExpiresAt: original?.maxExpiresAt ?? maxExpiresAt,
             createdAt: now,
           },
           fence: {
@@ -228,11 +289,9 @@ export class ManageReviewRunAuthorizations {
             operationalSloDigest: eligibility.slo.sloDigest,
             safetySnapshot: eligibility.safety,
             safetyTarget: {
-              workspaceId: input.verifiedIdentity.workspaceId,
-              repositoryConnectionId:
-                input.verifiedIdentity.repositoryConnectionId,
-              scmRepositoryIdentityId:
-                input.verifiedIdentity.scmRepositoryIdentityId,
+              workspaceId: verifiedIdentity.workspaceId,
+              repositoryConnectionId: verifiedIdentity.repositoryConnectionId,
+              scmRepositoryIdentityId: verifiedIdentity.scmRepositoryIdentityId,
               providerTasks: input.providerVoteLanes.map((lane) => ({
                 providerKind: lane.providerKind,
                 taskKind: ReviewTaskKind.CodeReview,
@@ -255,16 +314,20 @@ export class ManageReviewRunAuthorizations {
     if (write.authorization.state === ReviewRunAuthorizationState.Revoked) {
       return { status: ReviewRunAuthorizationUseCaseStatus.Revoked };
     }
-    if (write.authorization.expiresAt <= now) {
+    const issuedAt = this.dependencies.clock.now();
+    if (write.authorization.expiresAt <= issuedAt) {
       await this.dependencies.authorizationCommands.terminateReviewRunAuthorization(
         {
           authorizationId: write.authorization.authorizationId,
           expectedVersion: write.authorization.version,
           state: ReviewRunAuthorizationState.Expired,
-          at: now,
+          at: issuedAt,
         },
       );
       return { status: ReviewRunAuthorizationUseCaseStatus.Expired };
+    }
+    if (!(await this.runtimeSnapshotIsLive(write.authorization, issuedAt))) {
+      return denied(ReviewRunAuthorizationDenialReason.AdmissionFactsChanged);
     }
     return {
       status:
@@ -313,6 +376,9 @@ export class ManageReviewRunAuthorizations {
     }
     if (!verifiedIdentityMatches(authorization, input.verifiedIdentity)) {
       return denied(ReviewRunAuthorizationDenialReason.VerifiedIdentityDrift);
+    }
+    if (!(await this.runtimeSnapshotIsLive(authorization, now))) {
+      return denied(ReviewRunAuthorizationDenialReason.AdmissionFactsChanged);
     }
     let eligibility = await this.loadEligibility(
       input.verifiedIdentity,
@@ -374,6 +440,16 @@ export class ManageReviewRunAuthorizations {
             ? ReviewRunAuthorizationUseCaseStatus.Missing
             : ReviewRunAuthorizationUseCaseStatus.Conflict,
       };
+    }
+    if (
+      write.authorization.runtimeSnapshotCanonicalJson &&
+      (write.authorization.state !== ReviewRunAuthorizationState.Active ||
+        !(await this.runtimeSnapshotIsLive(
+          write.authorization,
+          this.dependencies.clock.now(),
+        )))
+    ) {
+      return denied(ReviewRunAuthorizationDenialReason.AdmissionFactsChanged);
     }
     return {
       status:
@@ -450,6 +526,24 @@ export class ManageReviewRunAuthorizations {
     if (!(await this.tokenClaimsMatchAuthorization(token, authorization))) {
       return { status: ReviewRunAuthorizationTokenResolutionStatus.ClaimDrift };
     }
+    const live = await this.runtimeSnapshotIsLive(authorization, now);
+    const resolvedAt = this.dependencies.clock.now();
+    const snapshot = parseReviewRunRuntimeSnapshot(
+      authorization.runtimeSnapshotCanonicalJson,
+    );
+    // The actual binding read can finish after a shorter token/renewal TTL.
+    // Use fresh time at every expiry boundary before returning valid.
+    if (
+      resolvedAt >= token.expiresAt ||
+      resolvedAt >= authorization.expiresAt ||
+      resolvedAt >= authorization.maxExpiresAt ||
+      (snapshot && resolvedAt >= new Date(snapshot.deadline))
+    ) {
+      return { status: ReviewRunAuthorizationTokenResolutionStatus.Expired };
+    }
+    if (!live) {
+      return { status: ReviewRunAuthorizationTokenResolutionStatus.Revoked };
+    }
     return {
       status: ReviewRunAuthorizationTokenResolutionStatus.Valid,
       authorization,
@@ -480,6 +574,26 @@ export class ManageReviewRunAuthorizations {
       ReviewRunAuthorizationTokenResolutionStatus.Valid
       ? { ...resolution, verifiedToken: token }
       : resolution;
+  }
+
+  private async runtimeSnapshotIsLive(
+    authorization: ReviewRunAuthorization,
+    now: Date,
+  ): Promise<boolean> {
+    const snapshot = parseReviewRunRuntimeSnapshot(
+      authorization.runtimeSnapshotCanonicalJson,
+    );
+    if (!snapshot) return true;
+    if (now >= new Date(snapshot.deadline)) return false;
+    if (!snapshot.gateway) return true;
+    const live =
+      (await this.dependencies.runtimeSnapshots?.isLive({
+        snapshot,
+        identity: authorization,
+        now,
+      })) ?? false;
+    // Binding/config reads can cross the original deadline; never extend it.
+    return live && this.dependencies.clock.now() < new Date(snapshot.deadline);
   }
 
   private async loadEligibility(
@@ -645,3 +759,22 @@ export type VerifiedReviewRunAuthorizationTokenResolution =
     >;
 
 export { tokenClaimsMatchAuthorization } from "./token-claims-match-authorization";
+
+function snapshotVerifiedIdentity(
+  identity: VerifiedScmRunIdentity,
+): VerifiedScmRunIdentity {
+  return {
+    workspaceId: identity.workspaceId,
+    repositoryConnectionId: identity.repositoryConnectionId,
+    scmRepositoryIdentityId: identity.scmRepositoryIdentityId,
+    pullRequestNumber: identity.pullRequestNumber,
+    sourceRunId: identity.sourceRunId,
+    sourceRunAttempt: identity.sourceRunAttempt,
+    workflowIdentityHash: identity.workflowIdentityHash,
+    trustDomain: identity.trustDomain,
+    baseSha: identity.baseSha,
+    mergeBaseSha: identity.mergeBaseSha,
+    headSha: identity.headSha,
+    reviewRevisionHash: identity.reviewRevisionHash,
+  };
+}

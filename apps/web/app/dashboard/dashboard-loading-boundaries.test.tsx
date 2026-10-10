@@ -154,7 +154,10 @@ vi.mock("@reviewrouter/features-entitlements", () => ({
   freeBetaEntitlement: () => ({ flags: { hosted_codex_pool: true } }),
   evaluateFeatureEntitlement: () => ({ allowed: true }),
 }));
-vi.mock("@reviewrouter/features-review-config", () => ({
+vi.mock("@reviewrouter/features-review-config", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@reviewrouter/features-review-config")
+  >()),
   PrismaReviewConfigurationRepository: fixtures.EmptyStore,
   findReviewConfiguration: fixtures.spies.config,
   findRepositoryReviewConfigurations: fixtures.spies.batchConfig,

@@ -13,7 +13,10 @@ import {
 import { ReviewConfigurationOperatorAudit } from "./review-configuration-operator-audit.js";
 
 export class PrismaReviewConfigurationOperatorMutation implements ReviewConfigurationOperatorMutationPort {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly operatorWorkspaceId?: string,
+  ) {}
 
   async commit(
     input: Parameters<ReviewConfigurationOperatorMutationPort["commit"]>[0],
@@ -27,7 +30,10 @@ export class PrismaReviewConfigurationOperatorMutation implements ReviewConfigur
               input.target,
             );
             const configurations =
-              new PrismaReviewConfigurationTransactionRepository(transaction);
+              new PrismaReviewConfigurationTransactionRepository(
+                transaction,
+                this.operatorWorkspaceId,
+              );
             const current = await resolveReviewConfiguration(input.target, {
               configurations,
             });

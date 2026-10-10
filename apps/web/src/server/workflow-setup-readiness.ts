@@ -19,6 +19,7 @@ import {
   codexWorkflowPathForRepository,
   isolatedQualityWorkflowPath,
   type ReviewRouterDiscussionMode,
+  renderAccountGatewayWorkflow,
 } from "@reviewrouter/features-workflow-provisioning";
 import { resolveWorkflowPublicApiUrl } from "./workflow-public-api-url";
 
@@ -30,6 +31,7 @@ export type WorkflowSetupReadinessInput = {
   readonly name: string;
   readonly defaultBranch: string;
   readonly actionRef: string;
+  readonly codexSessionMode?: "account-gateway";
   readonly providerKind?: ProviderKind;
   readonly discussionMode?: ReviewRouterDiscussionMode;
   readonly conflictReviewFallbackEnabled?: boolean;
@@ -52,6 +54,47 @@ export async function isWorkflowSetupAlreadyCurrent(
 ): Promise<boolean> {
   if (input.discussionMode === "suggest") {
     return false;
+  }
+
+  if (input.codexSessionMode === "account-gateway") {
+    if (
+      input.codexRotatingProviderInstanceId ||
+      input.codexRotatingWorkflowSecretNamespace ||
+      input.codexRotatingWorkflowSchemaVersion !== undefined ||
+      input.codexRotatingReviewActionV2Mode ||
+      input.codexRotatingClaudeCodeOAuthTokenSecret ||
+      input.codexRotatingOpenRouterApiKeySecret ||
+      input.conflictReviewFallbackEnabled ||
+      input.forkAgenticSandboxEnabled ||
+      input.providerKind
+    )
+      return false;
+    let expected: ReturnType<typeof renderAccountGatewayWorkflow>;
+    try {
+      expected = renderAccountGatewayWorkflow({
+        actionRef: input.actionRef,
+        apiUrl:
+          dependencies.resolvePublicApiUrl?.() ?? resolveWorkflowPublicApiUrl(),
+        githubRepositoryId: input.githubRepositoryId,
+      });
+    } catch {
+      return false;
+    }
+    const check = await dependencies.workflowProbe.probeWorkflow({
+      githubInstallationId: input.githubInstallationId,
+      owner: input.owner,
+      name: input.name,
+      defaultBranch: input.defaultBranch,
+      workflowPath: expected.path,
+      expectedActionRef: input.actionRef,
+      expectedContentValidator: (workflow) =>
+        areWorkflowDocumentsSemanticallyEqual(workflow, expected.content),
+    });
+    return (
+      check.status === "present" &&
+      check.expectedActionRefFound &&
+      check.expectedContentMarkersFound === true
+    );
   }
 
   const codexWorkflowPath = input.codexRotatingProviderInstanceId

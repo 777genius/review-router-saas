@@ -70,6 +70,143 @@ function fixture(
 }
 
 describe("hosted pool production controls", () => {
+  function renderMutationFixture(
+    input: {
+      unchanged?: boolean;
+      failure?: "put" | "post" | "response" | "deploy" | "identity" | "drift";
+    } = {},
+  ) {
+    const flag = "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_ADMISSION";
+    const env = new Map<string, Record<string, string>>(
+      ["srv-api", "srv-web"].map((id) => [
+        id,
+        { [flag]: input.unchanged ? "0" : "1", PRIVATE_EXTRA: "preserved" },
+      ]),
+    );
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const path = new URL(String(url)).pathname;
+        const id = path.split("/")[3]!;
+        const method = init?.method ?? "GET";
+        calls.push(`${method} ${path}`);
+        if (method === "PUT") {
+          if (input.failure === "put")
+            return new Response(null, { status: 503 });
+          const entries = JSON.parse(String(init?.body)) as {
+            key: string;
+            value: string;
+          }[];
+          expect(entries).toContainEqual({
+            key: "PRIVATE_EXTRA",
+            value: "preserved",
+          });
+          env.set(
+            id,
+            Object.fromEntries(entries.map(({ key, value }) => [key, value])),
+          );
+          return Response.json([]);
+        }
+        if (method === "POST") {
+          expect(JSON.parse(String(init?.body))).toEqual({
+            deployMode: "deploy_only",
+          });
+          if (input.failure === "post")
+            throw new Error("uncertain provider result");
+          if (input.failure === "response")
+            return Response.json({ deploy: null, id: `dep-${id}` });
+          return Response.json({
+            id: `dep-${id}`,
+            status: "update_in_progress",
+          });
+        }
+        if (path.includes("/deploys/")) {
+          if (input.failure === "drift") env.get(id)![flag] = "1";
+          return Response.json({
+            id: input.failure === "identity" ? "dep-competing" : `dep-${id}`,
+            status: input.failure === "deploy" ? "update_failed" : "live",
+          });
+        }
+        if (path.endsWith("/deploys"))
+          return Response.json([
+            { deploy: { id: "dep-competing", status: "live" } },
+          ]);
+        if (path.endsWith("/env-vars"))
+          return Response.json(
+            Object.entries(env.get(id)!).map(([key, value]) => ({
+              envVar: { key, value },
+            })),
+          );
+        return Response.json({
+          id,
+          name: id === "srv-api" ? "reviewrouter-api" : "reviewrouter-web",
+        });
+      },
+    );
+    const port = createRenderHostedPoolControlPort({
+      apiKey: "render-secret",
+      serviceIds: ["srv-api", "srv-web"],
+      databaseUrl: "postgresql://unused:unused@127.0.0.1:1/unused",
+      fetchImpl,
+    });
+    return { port, calls, flag };
+  }
+
+  it.each([false, true])(
+    "deploys flags and verifies the exact live deployment even when env already matches: %s",
+    async (unchanged) => {
+      const { port, calls, flag } = renderMutationFixture({ unchanged });
+      try {
+        await port.setFlags({ [flag]: "0" });
+        for (const id of ["srv-api", "srv-web"]) {
+          const start = calls.indexOf(`GET /v1/services/${id}`);
+          const sequence = calls.slice(start, start + (unchanged ? 6 : 7));
+          expect(sequence).toEqual([
+            `GET /v1/services/${id}`,
+            `GET /v1/services/${id}/env-vars`,
+            ...(unchanged ? [] : [`PUT /v1/services/${id}/env-vars`]),
+            `POST /v1/services/${id}/deploys`,
+            `GET /v1/services/${id}/deploys/dep-${id}`,
+            `GET /v1/services/${id}`,
+            `GET /v1/services/${id}/env-vars`,
+          ]);
+        }
+      } finally {
+        await port.disconnect();
+      }
+    },
+  );
+
+  it.each(["put", "post", "response", "deploy", "identity", "drift"] as const)(
+    "rejects flag qualification on %s failure without replaying a deployment",
+    async (failure) => {
+      const { port, calls, flag } = renderMutationFixture({ failure });
+      try {
+        const error = await port
+          .setFlags({ [flag]: "0" })
+          .catch((value: unknown) => value);
+        expect(error).toBeInstanceOf(AggregateError);
+        const expected = {
+          put: "hosted_pool_render_response_rejected:503",
+          post: "hosted_pool_render_request_failed",
+          response: "hosted_pool_render_deploy_identity_invalid:srv-api",
+          deploy: "hosted_pool_render_deploy_failed:srv-api:update_failed",
+          identity: "hosted_pool_render_deploy_identity_mismatch:srv-api",
+          drift: `hosted_pool_render_env_drift:srv-api:${flag}`,
+        }[failure];
+        expect(String((error as AggregateError).errors[0])).toContain(expected);
+        if (failure === "response")
+          expect(calls.some((call) => call.includes("/deploys/"))).toBe(false);
+        for (const id of ["srv-api", "srv-web"])
+          expect(
+            calls.filter((call) => call === `POST /v1/services/${id}/deploys`),
+          ).toHaveLength(failure === "put" ? 0 : 1);
+      } finally {
+        await port.disconnect();
+      }
+    },
+  );
+
   it("reads every paginated Render env var page", async () => {
     const flags = [
       "REVIEW_ROUTER_ENABLE_HOSTED_CODEX_POOL",

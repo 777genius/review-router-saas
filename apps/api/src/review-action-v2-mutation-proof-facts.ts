@@ -44,6 +44,21 @@ export interface ReviewV2DispatchCapabilityInspectionPort {
   }): Promise<{ readonly available: boolean }>;
 }
 
+function executionAuthorityMode(
+  inventory: {
+    readonly compatible: boolean;
+    readonly workflowSchemaVersion: number | null;
+  },
+  dispatchAvailable: boolean,
+): ReviewMutationExecutionAuthorityMode | null {
+  if (dispatchAvailable)
+    return ReviewMutationExecutionAuthorityMode.ManagedDispatch;
+  return inventory.compatible &&
+    isClientTriggeredT0WorkflowSchemaVersion(inventory.workflowSchemaVersion)
+    ? ReviewMutationExecutionAuthorityMode.ClientTriggered
+    : null;
+}
+
 export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutationAuthorityProofFactsQueryPorts {
   constructor(
     private readonly dependencies: {
@@ -105,7 +120,9 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
         registeredReleaseSelected,
         completionWorkerConfigured:
           this.dependencies.completionWorkerConfigured,
-        dispatchCapabilityAvailable: dispatchCapability.available,
+        dispatchCapabilityAvailable:
+          executionAuthorityMode(inventory, dispatchCapability.available) !==
+          null,
         managedWorkflowInventoryHash: inventory.inventoryHash,
         safetyDecisionEnabled: safety.effectAllowed,
         activationSafetyDecisionHash: safety.safetyDecisionHash,
@@ -163,14 +180,10 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
     ]);
     const registeredReleaseSelected =
       await this.isExactRegisteredReleaseSelected(inventory.actionCommitSha);
-    const clientTriggeredWorkflowAvailable =
-      inventory.compatible &&
-      isClientTriggeredT0WorkflowSchemaVersion(inventory.workflowSchemaVersion);
-    const executionAuthorityMode = dispatchCapability.available
-      ? ReviewMutationExecutionAuthorityMode.ManagedDispatch
-      : clientTriggeredWorkflowAvailable
-        ? ReviewMutationExecutionAuthorityMode.ClientTriggered
-        : null;
+    const selectedExecutionAuthorityMode = executionAuthorityMode(
+      inventory,
+      dispatchCapability.available,
+    );
     const freshV2OnlyProvisioningProven =
       this.dependencies.directV2InitializationEnabled &&
       authority === null &&
@@ -184,7 +197,7 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
         registeredReleaseSelected,
         completionWorkerConfigured:
           this.dependencies.completionWorkerConfigured,
-        executionAuthorityMode,
+        executionAuthorityMode: selectedExecutionAuthorityMode,
         managedWorkflowInventoryHash: inventory.inventoryHash,
         safetyDecisionEnabled: safety.effectAllowed,
         activationSafetyDecisionHash: safety.safetyDecisionHash,

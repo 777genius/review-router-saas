@@ -1,6 +1,8 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   parseReviewConfiguration,
+  parseReviewConfigurationStrict,
+  reviewProviderConfigurationSchema,
   type ReviewProviderConfiguration,
   safeDefaultReviewConfiguration,
 } from "@reviewrouter/features-review-config";
@@ -142,24 +144,38 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
     };
   }
 
-  async findRuntimeReviewConfiguration(input: {
-    readonly workspaceId: string;
-    readonly repositoryId: string;
-  }): Promise<RuntimeReviewConfigurationRecord | null> {
-    const repositoryConfig = await this.findLatestConfigVersion({
-      workspaceId: input.workspaceId,
-      targetKey: `repo:${input.repositoryId}`,
-      source: "repository",
-    });
+  // First admission parses stored rows strictly before legacy normalization can
+  // deduplicate them or substitute an unsupported auth mode/reasoning effort.
+  async findRuntimeReviewConfiguration(
+    input: {
+      readonly workspaceId: string;
+      readonly repositoryId: string;
+    },
+    reader: Pick<PrismaClient, "reviewConfiguration"> = this.prisma,
+    strictAdmission = false,
+  ): Promise<RuntimeReviewConfigurationRecord | null> {
+    const repositoryConfig = await this.findLatestConfigVersion(
+      {
+        workspaceId: input.workspaceId,
+        targetKey: `repo:${input.repositoryId}`,
+        source: "repository",
+      },
+      reader,
+      strictAdmission,
+    );
     if (repositoryConfig) {
       return repositoryConfig;
     }
 
-    return this.findLatestConfigVersion({
-      workspaceId: input.workspaceId,
-      targetKey: "workspace:default",
-      source: "workspace",
-    });
+    return this.findLatestConfigVersion(
+      {
+        workspaceId: input.workspaceId,
+        targetKey: "workspace:default",
+        source: "workspace",
+      },
+      reader,
+      strictAdmission,
+    );
   }
 
   async recordHealthReport(input: {
@@ -255,17 +271,22 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
     });
   }
 
-  private async findLatestConfigVersion(input: {
-    readonly workspaceId: string;
-    readonly targetKey: string;
-    readonly source: "repository" | "workspace";
-  }): Promise<RuntimeReviewConfigurationRecord | null> {
-    const configuration = await this.prisma.reviewConfiguration.findUnique({
+  private async findLatestConfigVersion(
+    input: {
+      readonly workspaceId: string;
+      readonly targetKey: string;
+      readonly source: "repository" | "workspace";
+    },
+    reader: Pick<PrismaClient, "reviewConfiguration">,
+    strictAdmission: boolean,
+  ): Promise<RuntimeReviewConfigurationRecord | null> {
+    const configuration = await reader.reviewConfiguration.findUnique({
       where: {
         workspaceId_targetKey: {
           workspaceId: input.workspaceId,
           targetKey: input.targetKey,
         },
+        active: true,
       },
       select: {
         versions: {
@@ -276,6 +297,8 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
             schemaVersion: true,
             providerKind: true,
             providerAuthMode: true,
+            gatewayBindingId: true,
+            gatewayProfileRef: true,
             model: true,
             reasoningEffort: true,
             agenticContext: true,
@@ -298,6 +321,8 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
               select: {
                 providerKind: true,
                 providerAuthMode: true,
+                gatewayBindingId: true,
+                gatewayProfileRef: true,
                 model: true,
                 reasoningEffort: true,
                 agenticContext: true,
@@ -315,13 +340,17 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
     }
 
     const providers = version.providers.length
-      ? version.providers.map(toReviewProviderConfiguration)
-      : [toReviewProviderConfiguration(version)];
+      ? version.providers.map((provider) =>
+          toReviewProviderConfiguration(provider, strictAdmission),
+        )
+      : [toReviewProviderConfiguration(version, strictAdmission)];
 
     return {
       source: input.source,
       version: version.version,
-      config: parseReviewConfiguration({
+      config: (strictAdmission
+        ? parseReviewConfigurationStrict
+        : parseReviewConfiguration)({
         schemaVersion: 2,
         providers,
         provider: providers[0],
@@ -331,7 +360,9 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
           inlineMinAgreement: version.inlineMinAgreement,
         },
         blockingPolicy: {
-          failOnSeverity: toFailOnSeverity(version.failOnSeverity),
+          failOnSeverity: strictAdmission
+            ? version.failOnSeverity
+            : toFailOnSeverity(version.failOnSeverity),
         },
         limits: {
           inlineMaxComments: version.inlineMaxComments,
@@ -418,28 +449,39 @@ function extractReviewRouterRuntimeGitRef(
   return null;
 }
 
-function toReviewProviderConfiguration(input: {
-  readonly providerKind: string;
-  readonly providerAuthMode: string;
-  readonly model: string;
-  readonly reasoningEffort: string;
-  readonly agenticContext: boolean;
-  readonly fastMode: boolean;
-  readonly requiredHealthy?: boolean;
-}): ReviewProviderConfiguration {
+function toReviewProviderConfiguration(
+  input: {
+    readonly providerKind: string;
+    readonly providerAuthMode: string;
+    readonly model: string;
+    readonly reasoningEffort: string;
+    readonly agenticContext: boolean;
+    readonly fastMode: boolean;
+    readonly requiredHealthy?: boolean;
+    readonly gatewayBindingId?: string | null;
+    readonly gatewayProfileRef?: string | null;
+  },
+  strictAdmission = false,
+): ReviewProviderConfiguration {
   const authMode = toProviderAuthMode({
     providerAuthMode: input.providerAuthMode,
     providerKind: input.providerKind,
   });
-  return {
-    kind: providerKindForAuthMode(authMode),
-    authMode,
+  return reviewProviderConfigurationSchema.parse({
+    kind: strictAdmission
+      ? input.providerKind
+      : providerKindForAuthMode(authMode),
+    authMode: strictAdmission ? input.providerAuthMode : authMode,
     model: input.model,
-    reasoningEffort: toReasoningEffort(input.reasoningEffort),
+    reasoningEffort: strictAdmission
+      ? input.reasoningEffort
+      : toReasoningEffort(input.reasoningEffort),
     agenticContext: input.agenticContext,
     fastMode: input.fastMode,
     requiredHealthy: input.requiredHealthy === true,
-  };
+    gatewayBindingId: input.gatewayBindingId ?? undefined,
+    gatewayProfileRef: input.gatewayProfileRef ?? undefined,
+  });
 }
 
 function toProviderAuthMode(input: {

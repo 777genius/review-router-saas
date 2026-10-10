@@ -78,9 +78,13 @@ export class AcquireOrJoinInvocationFlight {
     if (slot === undefined) {
       return { status: AcquireOrJoinInvocationFlightStatus.Missing };
     }
+    if (slot.state === ReviewWorkSlotState.Exhausted) {
+      return {
+        status: AcquireOrJoinInvocationFlightStatus.AttemptBudgetExhausted,
+      };
+    }
     if (
       slot.state === ReviewWorkSlotState.Satisfied ||
-      slot.state === ReviewWorkSlotState.Exhausted ||
       slot.state === ReviewWorkSlotState.Cancelled
     ) {
       return { status: AcquireOrJoinInvocationFlightStatus.NotRunnable };

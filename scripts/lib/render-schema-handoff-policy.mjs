@@ -217,6 +217,46 @@ const checkoutExtensions = Object.freeze([
       "af399b3aea5cd73e0b65a46085bba2df216cd44888caf066baa02a6516f7d585",
   }),
   Object.freeze({
+    migrationName: "000117_provider_accounts",
+    checksum:
+      "786e21fc4a8880c25f41304393a576d8e3337b6654720931aa076fdbf793c4e7",
+  }),
+  Object.freeze({
+    migrationName: "000118_workspace_binding_fences",
+    checksum:
+      "fe73ffe809b3c49b0739060e853e1a824ea6bf019a9922fccc8b729581db48db",
+  }),
+  Object.freeze({
+    migrationName: "000119_review_configuration_gateway_binding",
+    checksum:
+      "2c0dde1720111063059d5226c6011c15389b6877a6a1f924177a24a36aa81a70",
+  }),
+  Object.freeze({
+    migrationName: "000120_review_run_runtime_snapshot",
+    checksum:
+      "6ced2dc41f736a2c6e42d6edafc4e9f753622fa157baff09ea962da9d81bd369",
+  }),
+  Object.freeze({
+    migrationName: "000121_review_run_gateway_execution_binding",
+    checksum:
+      "c00f5df0b3971477cdf666b3259e173aec2df0d150e3335507617242742967e6",
+  }),
+  Object.freeze({
+    migrationName: "000122_review_configuration_operation_receipt",
+    checksum:
+      "89f9f4eadeb88733adddb051bca5e50bdc86bbb06e45905d3bdf18eedbd1386e",
+  }),
+  Object.freeze({
+    migrationName: "000123_personal_workspace_identity",
+    checksum:
+      "b459bbb36015e16656fa20d5712b14fa19a87a415b801e0e8ea641e9020f19f6",
+  }),
+  Object.freeze({
+    migrationName: "000124_personal_account_operations",
+    checksum:
+      "2ffa20a0d21182bad0dfdce6653bc09b436cd72ab6335ac8065a17462bd3c6a1",
+  }),
+  Object.freeze({
     migrationName: "000125_hosted_codex_device_reconnect",
     checksum:
       "bf6d4c8df95d50a75f85d70c0e80f3c26963cdc86ea05125723af9568f14c54e",
@@ -271,7 +311,7 @@ export function partitionRenderSchemaHandoffCheckout(catalog) {
   if (
     ![
       0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
     ].includes(extensions)
   )
     fail("checkout_extension");
@@ -401,12 +441,60 @@ export function partitionRenderSchemaHandoffCheckout(catalog) {
       "sha256:30f68ffc62e0b46815bc007339d83aa7894b61b23f301c012b8990713cc0ad14"
   )
     fail("checkout_manifest");
-  // Main's source through 000116 plus SQL125 is a distinct checkout branch.
-  // Count24 alone does not admit an integration history containing SQL117.
   if (
     extensions === 24 &&
+    ![
+      "sha256:c5c0618f105799d06d21424433cec4a59fc052e63f594c2aace0657ebb52d1dd",
+      "sha256:afa28624860779e511a551d38910b94b336b0e638c696cadeffad3f62101c1dc",
+    ].includes(manifest(catalog))
+  )
+    fail("checkout_manifest");
+  if (
+    extensions === 25 &&
     manifest(catalog) !==
-      "sha256:afa28624860779e511a551d38910b94b336b0e638c696cadeffad3f62101c1dc"
+      "sha256:6bd2cd3c077f6cf56735c7192dd6e0f84a21bbec5a2657271cb5afaf1d2f20cf"
+  )
+    fail("checkout_manifest");
+  if (
+    extensions === 26 &&
+    manifest(catalog) !==
+      "sha256:2ee71e958dc9b4a564fd113a4983917ad6e3f7ea22cd19fa29bdb7dc72320e1c"
+  )
+    fail("checkout_manifest");
+  if (
+    extensions === 27 &&
+    manifest(catalog) !==
+      "sha256:f998e11bee1748adecf31dc07ec61d59b55ead60b2734a71f90065d3f9f4aa6b"
+  )
+    fail("checkout_manifest");
+  if (
+    extensions === 28 &&
+    manifest(catalog) !==
+      "sha256:5f01c4416620cf984ffa5fee8dbb26bcf171ae3a89ec4e4b8615e4c7c8461c64"
+  )
+    fail("checkout_manifest");
+  if (
+    extensions === 29 &&
+    manifest(catalog) !==
+      "sha256:858537d185e32ef6258ddf674b5a201e6cc0c4e44fa948a18af23d6dd55905ec"
+  )
+    fail("checkout_manifest");
+  if (
+    extensions === 30 &&
+    manifest(catalog) !==
+      "sha256:5629630be035cbf1677692e840bc07c7292729bfb5bfc0c242f38179f3230df4"
+  )
+    fail("checkout_manifest");
+  if (
+    extensions === 31 &&
+    manifest(catalog) !==
+      "sha256:f26da08b44ad6830f4486f93ed33979acda7b5669a8550601c34dbf9c0322443"
+  )
+    fail("checkout_manifest");
+  if (
+    extensions === 32 &&
+    manifest(catalog) !==
+      "sha256:cf270d22a10557c8ebe66cc7cb5e47eb18a5c43274981b46d340123e7d6ba41a"
   )
     fail("checkout_manifest");
   assertRenderSchemaHandoffCatalog(managed);

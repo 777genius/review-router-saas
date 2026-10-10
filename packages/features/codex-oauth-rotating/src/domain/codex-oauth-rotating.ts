@@ -1,5 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { parseDocument } from "yaml";
+import { isLoopbackHostname } from "@reviewrouter/shared";
 import sodium from "libsodium-wrappers";
 import {
   assertCanonicalCodexRotatingProviderId,
@@ -970,13 +972,28 @@ export type CodexRotatingWorkflowScanResult = {
   readonly errors: readonly string[];
 };
 
-export type CodexRotatingWorkflowSourceMetadata = {
+type CodexWorkflowSourceIdentity = {
   readonly actionRef: string;
   readonly apiUrl: string;
   readonly providerInstanceId: string;
-  readonly workflowSchemaVersion: number;
-  readonly secretNamespace?: VersionedProviderSecretNamespace;
 };
+
+export type AccountGatewayWorkflowSourceMetadata =
+  CodexWorkflowSourceIdentity & {
+    readonly workflowSchemaVersion: CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2;
+    readonly codexSessionMode: "account-gateway";
+    readonly runtimeConfigMode: "oidc";
+    readonly runtimeRef: string;
+    readonly secretNamespace?: never;
+  };
+
+export type CodexRotatingWorkflowSourceMetadata =
+  | AccountGatewayWorkflowSourceMetadata
+  | (CodexWorkflowSourceIdentity & {
+      readonly workflowSchemaVersion: number;
+      readonly codexSessionMode?: never;
+      readonly secretNamespace?: VersionedProviderSecretNamespace;
+    });
 
 function scanCodexForkAgenticSandboxMarkers(
   workflow: string,
@@ -1082,6 +1099,20 @@ function workflowJobUsesExpectedConcurrency(input: {
 export function scanCodexRotatingAdvisoryWorkflow(
   workflow: string,
 ): CodexRotatingWorkflowScanResult {
+  try {
+    if (readAccountGatewayMetadataIfPresent(workflow)) {
+      return { valid: true, errors: [] };
+    }
+  } catch (error) {
+    return {
+      valid: false,
+      errors: [
+        error instanceof Error
+          ? error.message
+          : "account_gateway_workflow_invalid",
+      ],
+    };
+  }
   if (
     /^ {4}uses:\s*[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/reviewrouter(?:-t0)?-reusable\.yml@/m.test(
       workflow,
@@ -1721,6 +1752,10 @@ function scanCodexRotatingT0AdvisoryWorkflow(
 export function readCodexRotatingWorkflowSourceMetadata(
   workflow: string,
 ): CodexRotatingWorkflowSourceMetadata {
+  const gatewayMetadata = readAccountGatewayMetadataIfPresent(workflow);
+  if (gatewayMetadata) {
+    return gatewayMetadata;
+  }
   const scan = scanCodexRotatingAdvisoryWorkflow(workflow);
   if (!scan.valid) {
     throw new Error(`codex_rotating_workflow_invalid:${scan.errors.join(",")}`);
@@ -2961,4 +2996,233 @@ function shellQuote(value: string): string {
     return value;
   }
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+export function validateAccountGatewayActionRef(
+  actionRef: string | undefined,
+): string {
+  if (
+    !actionRef ||
+    !/^777genius\/review-router@[a-f0-9]{40}$/.test(actionRef)
+  ) {
+    throw new Error("account_gateway_requires_immutable_action_ref");
+  }
+  return actionRef;
+}
+/** Keyless gateway caller; authority remains in server run admission. */
+export function renderCanonicalAccountGatewayWorkflow(options: {
+  readonly actionRef: string;
+  readonly apiUrl: string;
+  readonly githubRepositoryId: string;
+  readonly reviewTimeoutMinutes?: number;
+}): string {
+  const reviewTimeoutMinutes =
+    options.reviewTimeoutMinutes ??
+    codexRotatingT0DefaultTimeoutMinutesForSchema(
+      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+    );
+  if (
+    !Number.isSafeInteger(reviewTimeoutMinutes) ||
+    reviewTimeoutMinutes < 10 ||
+    reviewTimeoutMinutes > 360
+  ) {
+    throw new Error("account_gateway_review_timeout_invalid");
+  }
+  const runtimeRef = validateAccountGatewayActionRef(options.actionRef).split(
+    "@",
+  )[1]!;
+  assertSafeAccountGatewayApiUrl(options.apiUrl);
+  const providerInstanceId = canonicalCodexRotatingProviderId(
+    options.githubRepositoryId,
+  );
+  return `name: ReviewRouter Codex
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+permissions: {}
+jobs:
+  codex-review:
+    if: \${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' && github.event.pull_request.draft == false }}
+    concurrency:
+      group: reviewrouter-codex-\${{ github.repository_id }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    uses: 777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${runtimeRef}
+    with:
+      runtime_ref: ${JSON.stringify(runtimeRef)}
+      api_url: ${JSON.stringify(options.apiUrl)}
+      pr_number: \${{ format('{0}', github.event.pull_request.number) }}
+      review_head_sha: \${{ github.event.pull_request.head.sha }}
+      provider_instance_id: ${JSON.stringify(providerInstanceId)}
+      runtime_config_mode: oidc
+      codex_session_mode: account-gateway
+      workflow_schema_version: 2
+      review_timeout_minutes: ${reviewTimeoutMinutes}
+`;
+}
+
+/** Source recognition only: callers must still bind these values to trusted server configuration. */
+export function readCanonicalAccountGatewayWorkflowSourceMetadata(
+  workflow: string,
+): AccountGatewayWorkflowSourceMetadata {
+  const root = requireAccountGatewayMapping(
+    readCanonicalWorkflowDocument(workflow),
+  );
+  const jobs = requireAccountGatewayMapping(root.jobs);
+  const job = requireAccountGatewayMapping(jobs["codex-review"]);
+  const inputs = requireAccountGatewayMapping(job.with);
+  if (
+    inputs.codex_session_mode !== "account-gateway" ||
+    inputs.workflow_schema_version !==
+      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
+  ) {
+    throw new Error("account_gateway_workflow_mode_or_schema_invalid");
+  }
+  const uses = typeof job.uses === "string" ? job.uses : "";
+  const actionRef = validateAccountGatewayActionRef(
+    uses.replace("/.github/workflows/reviewrouter-t0-reusable.yml@", "@"),
+  );
+  const apiUrl = typeof inputs.api_url === "string" ? inputs.api_url : "";
+  const providerInstanceId =
+    typeof inputs.provider_instance_id === "string"
+      ? inputs.provider_instance_id
+      : "";
+  const repositoryId = codexRotatingProviderIdSchema
+    .parse(providerInstanceId)
+    .split(":")[1]!;
+  const reviewTimeoutMinutes = inputs.review_timeout_minutes;
+  if (typeof reviewTimeoutMinutes !== "number") {
+    throw new Error("account_gateway_review_timeout_invalid");
+  }
+  const expectedWorkflow = renderCanonicalAccountGatewayWorkflow({
+    actionRef,
+    apiUrl,
+    githubRepositoryId: repositoryId,
+    reviewTimeoutMinutes,
+  });
+  if (!areWorkflowDocumentsSemanticallyEqual(workflow, expectedWorkflow)) {
+    throw new Error("codex_rotating_t0_workflow_source_not_canonical");
+  }
+  return {
+    actionRef,
+    apiUrl,
+    providerInstanceId,
+    workflowSchemaVersion:
+      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+    codexSessionMode: "account-gateway",
+    runtimeConfigMode: "oidc",
+    runtimeRef: actionRef.split("@")[1]!,
+  };
+}
+
+/** An explicit session-mode input must never fall back to legacy secret scanning. */
+function readAccountGatewayMetadataIfPresent(
+  workflow: string,
+): AccountGatewayWorkflowSourceMetadata | undefined {
+  let inputs: Record<string, unknown>;
+  try {
+    const root = requireAccountGatewayMapping(
+      readCanonicalWorkflowDocument(workflow),
+    );
+    const jobs = requireAccountGatewayMapping(root.jobs);
+    const job = requireAccountGatewayMapping(jobs["codex-review"]);
+    inputs = requireAccountGatewayMapping(job.with);
+  } catch {
+    // Leave legacy source recognition unchanged.
+    return undefined;
+  }
+  return Object.hasOwn(inputs, "codex_session_mode")
+    ? readCanonicalAccountGatewayWorkflowSourceMetadata(workflow)
+    : undefined;
+}
+
+function requireAccountGatewayMapping(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("codex_rotating_workflow_mapping_required");
+  }
+  return value as Record<string, unknown>;
+}
+
+function assertSafeAccountGatewayApiUrl(apiUrl: string): void {
+  if (apiUrl.includes("${{")) {
+    throw new Error("invalid_workflow_api_url");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(apiUrl);
+  } catch {
+    throw new Error("invalid_workflow_api_url");
+  }
+  if (
+    parsed.username ||
+    parsed.password ||
+    parsed.pathname !== "/" ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error("invalid_workflow_api_url");
+  }
+  const local = isLoopbackHostname(parsed.hostname);
+  if (parsed.protocol === "https:" && !local) {
+    return;
+  }
+  if (parsed.protocol === "http:" && local) {
+    return;
+  }
+
+  throw new Error("invalid_workflow_api_url");
+}
+
+export function areWorkflowDocumentsSemanticallyEqual(
+  actual: string,
+  expected: string,
+): boolean {
+  try {
+    return (
+      JSON.stringify(readCanonicalWorkflowDocument(actual)) ===
+      JSON.stringify(readCanonicalWorkflowDocument(expected))
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function workflowDocumentSemanticSha256(source: string): string {
+  return createHash("sha256")
+    .update(JSON.stringify(readCanonicalWorkflowDocument(source)), "utf8")
+    .digest("hex");
+}
+
+export function readCanonicalWorkflowDocument(source: string): unknown {
+  const document = parseDocument(source, {
+    schema: "core",
+    strict: true,
+    stringKeys: true,
+    uniqueKeys: true,
+    prettyErrors: false,
+  });
+  if (document.errors.length > 0 || document.warnings.length > 0) {
+    throw new Error("codex_rotating_workflow_yaml_invalid");
+  }
+  return canonicalizeWorkflowDocument(document.toJS({ maxAliasCount: 0 }));
+}
+
+function canonicalizeWorkflowDocument(value: unknown): unknown {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new Error("codex_rotating_workflow_non_finite_number");
+  }
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeWorkflowDocument);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalizeWorkflowDocument(entry)]),
+    );
+  }
+  return value;
 }

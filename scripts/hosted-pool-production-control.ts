@@ -939,16 +939,37 @@ export function createRenderHostedPoolControlPort(input: {
           const changed = Object.entries(patch).some(
             ([key, value]) => current[key] !== value,
           );
-          if (!changed) continue;
-          const priorDeployId = await latestDeployId(request, id);
-          for (const [key, value] of Object.entries(patch))
-            current[key] = value;
-          await request(
-            "PUT",
-            `/services/${id}/env-vars`,
-            Object.entries(current).map(([key, value]) => ({ key, value })),
-          );
-          await waitForNewLiveDeploy(request, id, priorDeployId);
+          if (changed) {
+            for (const [key, value] of Object.entries(patch))
+              current[key] = value;
+            await request(
+              "PUT",
+              `/services/${id}/env-vars`,
+              Object.entries(current).map(([key, value]) => ({ key, value })),
+            );
+          }
+          // Provider env equality does not prove the running deployment used it.
+          // Deploy once even after an earlier invocation already persisted flags.
+          const value = await request("POST", `/services/${id}/deploys`, {
+            deployMode: "deploy_only",
+          });
+          if (
+            typeof value !== "object" ||
+            value === null ||
+            Array.isArray(value)
+          )
+            throw new Error(`hosted_pool_render_deploy_identity_invalid:${id}`);
+          const deploy = "deploy" in value ? value.deploy : value;
+          if (
+            typeof deploy !== "object" ||
+            deploy === null ||
+            Array.isArray(deploy) ||
+            !("id" in deploy) ||
+            typeof deploy.id !== "string" ||
+            !/^dep-[a-zA-Z0-9_-]+$/u.test(deploy.id)
+          )
+            throw new Error(`hosted_pool_render_deploy_identity_invalid:${id}`);
+          await waitForLiveDeploy(request, id, deploy.id);
           const observed = await readService(id);
           for (const [key, value] of Object.entries(patch)) {
             if (observed[key] !== value)
@@ -1194,38 +1215,34 @@ function readUnsignedFaultPlanRepositoryId(token: string): bigint {
   return BigInt(repositoryId);
 }
 
-async function latestDeployId(
+async function waitForLiveDeploy(
   request: (method: string, path: string, body?: unknown) => Promise<any>,
   serviceId: string,
-) {
-  const value = await request("GET", `/services/${serviceId}/deploys?limit=1`);
-  const item = Array.isArray(value) ? value[0] : value?.deploys?.[0];
-  return (item?.deploy ?? item)?.id ?? null;
-}
-
-async function waitForNewLiveDeploy(
-  request: (method: string, path: string, body?: unknown) => Promise<any>,
-  serviceId: string,
-  priorDeployId: string | null,
+  deployId: string,
 ) {
   for (let poll = 0; poll < 120; poll += 1) {
     const value = await request(
       "GET",
-      `/services/${serviceId}/deploys?limit=1`,
+      `/services/${serviceId}/deploys/${deployId}`,
     );
-    const item = Array.isArray(value) ? value[0] : value?.deploys?.[0];
-    const deploy = item?.deploy ?? item;
-    if (deploy?.id && deploy.id !== priorDeployId) {
-      if (deploy.status === "live") return;
-      if (
-        ["build_failed", "update_failed", "canceled", "deactivated"].includes(
-          deploy.status,
-        )
-      )
-        throw new Error(
-          `hosted_pool_render_deploy_failed:${serviceId}:${deploy.status}`,
-        );
-    }
+    const deploy = value?.deploy ?? value;
+    if (deploy?.id !== deployId)
+      throw new Error(
+        `hosted_pool_render_deploy_identity_mismatch:${serviceId}`,
+      );
+    if (deploy.status === "live") return;
+    if (
+      [
+        "build_failed",
+        "pre_deploy_failed",
+        "update_failed",
+        "canceled",
+        "deactivated",
+      ].includes(deploy.status)
+    )
+      throw new Error(
+        `hosted_pool_render_deploy_failed:${serviceId}:${deploy.status}`,
+      );
     await new Promise((done) => setTimeout(done, 5_000));
   }
   throw new Error(`hosted_pool_render_deploy_timeout:${serviceId}`);

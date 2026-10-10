@@ -13,6 +13,11 @@
       "types": "./src/domain/review-reasoning-effort.ts",
       "production": "./dist/domain/review-reasoning-effort.js",
       "default": "./src/domain/review-reasoning-effort.ts"
+    },
+    "./review-configuration": {
+      "types": "./src/domain/review-configuration.ts",
+      "production": "./dist/domain/review-configuration.js",
+      "default": "./src/domain/review-configuration.ts"
     }
   },
   "dependencies": {
@@ -25,5 +30,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@prisma/adapter-pg": "7.8.0",
+    "@types/pg": "8.23.1",
+    "pg": "8.23.0"
   }
 }

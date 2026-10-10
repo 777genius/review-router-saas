@@ -587,6 +587,7 @@ async function acquireLease(
         Math.min(limits.maxLeaseDurationMs, d.timing.initialLeaseDurationMs),
       ),
       snapshot.execution.executionDeadlineAt,
+      authorization.expiresAt,
     ),
     resultReportUntil: minDate(
       add(now, limits.maxResultReportDurationMs),

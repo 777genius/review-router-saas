@@ -43,18 +43,9 @@ const input = () => ({
 });
 
 describe("bounded managed89-to92 transaction construction", () => {
-  it("keeps the reader-to-builder boundary at92 for main plus sparse SQL125", () => {
-    const currentCheckout = readdirSync(
-      "packages/platform/db/prisma/migrations",
-    ).sort();
-    expect(currentCheckout).toHaveLength(117);
-    expect(currentCheckout.at(-1)).toBe("000125_hosted_codex_device_reconnect");
-    const historicalMain = currentCheckout.filter(
-      (name) => name !== "000125_hosted_codex_device_reconnect",
-    );
-    expect(historicalMain).toHaveLength(116);
-    expect(historicalMain.at(-1)).toBe(
-      "000116_hosted_codex_relay_admission_utc",
+  it("keeps the reader-to-builder boundary at92 for the exact125 checkout", () => {
+    expect(readdirSync("packages/platform/db/prisma/migrations")).toHaveLength(
+      125,
     );
     expect(catalog).toHaveLength(92);
     const sql = renderSchemaHandoffTransaction(input());
@@ -196,6 +187,14 @@ describe("bounded managed89-to92 transaction construction", () => {
         "000114_sdk_growth_v3_tool_artifact",
         "000115_sdk_growth_v3_approved_manifest",
         "000116_hosted_codex_relay_admission_utc",
+        "000117_provider_accounts",
+        "000118_workspace_binding_fences",
+        "000119_review_configuration_gateway_binding",
+        "000120_review_run_runtime_snapshot",
+        "000121_review_run_gateway_execution_binding",
+        "000122_review_configuration_operation_receipt",
+        "000123_personal_workspace_identity",
+        "000124_personal_account_operations",
         "000125_hosted_codex_device_reconnect",
       ].map((migrationName) => ({
         migrationName,

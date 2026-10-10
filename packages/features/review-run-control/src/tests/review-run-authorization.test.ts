@@ -538,12 +538,26 @@ describe("ReviewRunAuthorization", () => {
     const first = await kit.control.authorizations.authorizeReviewRun({
       ...fixture.authorizeInput,
       authorizationTtlMs: 1_000,
+      maxAuthorizationLifetimeMs: 30_000,
     });
     expect(first.status).toBe(ReviewRunAuthorizationUseCaseStatus.Authorized);
+    if (!("authorization" in first)) throw new Error("fixture_failed");
+    expect(first.authorization.expiresAt.getTime()).toBe(
+      kit.clock.now().getTime() + 1_000,
+    );
+    expect(first.authorization.maxExpiresAt.getTime()).toBe(
+      kit.clock.now().getTime() + 30_000,
+    );
     kit.clock.advance(1_001);
+    expect(
+      await kit.control.authorizations.resolveReviewRunAuthorizationToken({
+        token: first.token.token,
+      }),
+    ).toEqual({ status: ReviewRunAuthorizationTokenResolutionStatus.Invalid });
     const expired = await kit.control.authorizations.authorizeReviewRun({
       ...fixture.authorizeInput,
       authorizationTtlMs: 1_000,
+      maxAuthorizationLifetimeMs: 30_000,
     });
     expect(expired.status).toBe(ReviewRunAuthorizationUseCaseStatus.Expired);
   });
