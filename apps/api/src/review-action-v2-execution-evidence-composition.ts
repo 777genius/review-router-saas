@@ -704,6 +704,7 @@ async function renewLease(
     expiresAt: minDate(
       add(lease.acquiredAt, limits.maxLeaseDurationMs),
       snapshot.execution.executionDeadlineAt,
+      lease.resultReportUntil,
     ),
     resultReportUntil: lease.resultReportUntil,
     limits,

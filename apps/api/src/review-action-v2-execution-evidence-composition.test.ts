@@ -25,6 +25,7 @@ import {
 import {
   AcquireOrJoinInvocationFlightStatus,
   CurrentReviewExecutionRevisionStatus,
+  LeaseTransitionDecisionStatus,
   ReviewCoverageState,
   ReviewExecutionProviderKind,
   ReviewExecutionFinalizeStatus,
@@ -42,6 +43,7 @@ import {
   canonicalReviewAssignmentManifestHashPreimage,
   canonicalReviewExecutionPlanHashPreimage,
   decideLeaseAcquire,
+  decideLeaseRenewal,
   type ReviewExecutionSnapshot,
   type FinalizedReviewProjectionArtifact,
   type InvocationFlight,
@@ -707,8 +709,9 @@ describe("Review Action v2 execution/evidence composition", () => {
     expect(issueLease).not.toHaveBeenCalled();
   });
 
-  it("acquires a valid lease when authorization has less than the initial lease duration left", async () => {
+  it("acquires and renews a valid lease when authorization has less than the initial lease duration left", async () => {
     const delayedNow = new Date(now.getTime() + 1_000);
+    let currentNow = delayedNow;
     const delayedSnapshot = {
       ...snapshot,
       execution: {
@@ -734,11 +737,34 @@ describe("Review Action v2 execution/evidence composition", () => {
         flight: invocationFlight(acquiredLease),
       };
     });
+    const renew = vi.fn<
+      ReviewActionV2ExecutionHandlerDependencies["executions"]["invocationLeases"]["renew"]
+    >(async (command) => {
+      if (!acquiredLease) throw new Error("test_lease_not_acquired");
+      const decision = decideLeaseRenewal({
+        ...command,
+        lease: acquiredLease,
+        execution: delayedSnapshot.execution,
+      });
+      if (decision.status === LeaseTransitionDecisionStatus.InvalidDeadline) {
+        return {
+          status: ReviewInvocationLeaseTransitionStatus.InvalidDeadline,
+        };
+      }
+      if (decision.status !== LeaseTransitionDecisionStatus.Restored)
+        throw new Error("test_lease_not_restored");
+      acquiredLease = decision.lease;
+      return {
+        status: ReviewInvocationLeaseTransitionStatus.Restored,
+        lease: decision.lease,
+      };
+    });
     const dependencies = executionDependencies({
-      now: () => delayedNow,
+      now: () => currentNow,
       findExecution: vi.fn(async () => delayedSnapshot),
       findLease: vi.fn(async () => acquiredLease ?? null),
       acquire,
+      renew,
       leaseSafety: vi.fn(async () => ({
         allowed: true,
         decisionHash: hash("6"),
@@ -781,14 +807,52 @@ describe("Review Action v2 execution/evidence composition", () => {
       } satisfies ReviewInvocationLeaseAcquireRequest,
     );
 
-    await expect(
-      createReviewActionV2ExecutionHandlers(d).acquireLease.execute(request),
-    ).resolves.toMatchObject({ statusCode: 201 });
+    const handlers = createReviewActionV2ExecutionHandlers(d);
+    const acquired = await handlers.acquireLease.execute(request);
+    expect(acquired).toMatchObject({ statusCode: 201 });
     expect(acquiredLease?.expiresAt).toEqual(authorization.expiresAt);
     expect(acquiredLease?.resultReportUntil).toEqual(authorization.expiresAt);
     expect(acquiredLease?.expiresAt.getTime()).toBeGreaterThan(
       delayedNow.getTime(),
     );
+    if (!acquiredLease || !acquired.result.leaseCapability)
+      throw new Error("test_acquired_capability_missing");
+    const originalLease = acquiredLease;
+    currentNow = new Date(delayedNow.getTime() + 30_000);
+    const renewed = await handlers.renewLease.execute(
+      await withBodyHash(ReviewActionV2OperationId.ReviewInvocationLeaseRenew, {
+        ...envelope("renew-short-authorization"),
+        leaseCapability: acquired.result.leaseCapability,
+        idempotencyKey: "renew-short-authorization",
+        requestBodyHash: hash("0"),
+        leaseId: originalLease.leaseId,
+        ownerIdHash: originalLease.ownerIdHash,
+        fencingToken: originalLease.fencingToken.toString(10),
+        renewRequestId: "renew-short-authorization",
+      }),
+    );
+    expect(renewed).toMatchObject({
+      statusCode: 200,
+      result: {
+        status: ReviewInvocationLeaseResultStatus.Restored,
+        expiresAt: authorization.expiresAt.toISOString(),
+        fencingToken: originalLease.fencingToken.toString(10),
+      },
+    });
+    expect(acquiredLease.resultReportUntil).toEqual(
+      originalLease.resultReportUntil,
+    );
+    expect(acquiredLease.expiresAt.getTime()).toBeGreaterThan(
+      currentNow.getTime(),
+    );
+    if (!renewed.result.leaseCapability)
+      throw new Error("test_renewed_capability_missing");
+    await expect(
+      d.capabilities.verifyLease(renewed.result.leaseCapability, currentNow),
+    ).resolves.toMatchObject({
+      ownershipExpiresAt: originalLease.expiresAt,
+      resultReportUntil: originalLease.resultReportUntil,
+    });
   });
 
   it("returns busy for an exact-revision join without issuing owner capability", async () => {
